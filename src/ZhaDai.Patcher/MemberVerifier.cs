@@ -5,6 +5,7 @@ using System.IO;
 using System.Linq;
 using System.Reflection;
 using Mono.Cecil;
+using Mono.Cecil.Cil;
 
 namespace ZhaDai.Patcher
 {
@@ -270,11 +271,168 @@ namespace ZhaDai.Patcher
         }
 
         /// <summary>
-        /// Reflects the plugin assembly to read its optional self-describing requirement list.
-        /// Loading the plugin is safe: it is plain managed code that only depends on the BCL,
-        /// unlike Terraria.exe which needs XNA.
+        /// Reads the plugin's optional self-describing requirement list.
+        ///
+        /// Requirements are decoded from IL with Cecil rather than by loading the assembly with
+        /// <c>Assembly.LoadFrom</c>. That keeps the tool offline and deterministic: the list is
+        /// built in the type initializer out of literal factory calls, so the values are readable
+        /// without running anything, and no version of the plugin ever leaks into this process.
+        /// A reflection pass is kept as a fallback for a differently shaped list.
         /// </summary>
         private static List<RequirementView> LoadRuntimeRequirements(string pluginDll, List<string> lines)
+        {
+            var fromIl = LoadRuntimeRequirementsFromIl(pluginDll, lines);
+            if (fromIl != null) return fromIl;
+            return LoadRuntimeRequirementsByReflection(pluginDll, lines);
+        }
+
+        /// <summary>
+        /// Factory method names accepted when decoding the requirement list. The full names are the
+        /// documented shape; the single-letter forms are what Roslyn actually emits for short
+        /// private helpers, so both must be accepted or the decoder silently sees almost nothing.
+        /// </summary>
+        private static readonly string[] FactoryMethods =
+        {
+            "Field", "Property", "Method", "F", "P", "M"
+        };
+
+        private static string KindFromFactory(string name)
+        {
+            switch (name)
+            {
+                case "Field":
+                case "F":
+                    return "Field";
+                case "Property":
+                case "P":
+                    return "Property";
+                default:
+                    return "Method";
+            }
+        }
+
+        private static List<RequirementView> LoadRuntimeRequirementsFromIl(string pluginDll, List<string> lines)
+        {
+            try
+            {
+                using (var module = ModuleDefinition.ReadModule(pluginDll, new ReaderParameters { ReadSymbols = false }))
+                {
+                    var type = FindType(module, RequirementsTypeName);
+                    if (type == null) return null;
+
+                    var initializer = type.Methods.FirstOrDefault(m => m.Name == ".cctor");
+                    if (initializer == null || !initializer.HasBody) return null;
+
+                    var result = new List<RequirementView>();
+                    var skipped = 0;
+                    var instructions = initializer.Body.Instructions;
+                    for (var i = 0; i < instructions.Count; i++)
+                    {
+                        var reference = instructions[i].Operand as MethodReference;
+                        if (reference == null || reference.HasThis) continue;
+                        if (reference.DeclaringType.FullName != type.FullName) continue;
+                        if (!FactoryMethods.Contains(reference.Name)) continue;
+                        if (reference.ReturnType.Name != "Requirement") continue;
+
+                        var values = ReadStraightLineLiterals(instructions, i);
+                        if (values == null || values.Count < 3) { skipped++; continue; }
+                        if (values.Count < 3) { skipped++; continue; }
+
+                        var typeName = values[0] as string;
+                        var memberName = values[1] as string;
+                        if (string.IsNullOrEmpty(typeName) || memberName == null) continue;
+
+                        var required = !(values[2] is int) || (int)values[2] != 0;
+
+                        // A params string[] shows up as the collected string elements after the
+                        // boolean; a plain string would only be the Note argument.
+                        var parameters = new List<string>();
+                        if (values.Count > 4 && values[4] is List<string>) parameters.AddRange((List<string>)values[4]);
+
+                        result.Add(new RequirementView(typeName, memberName, KindFromFactory(reference.Name),
+                            required, parameters.ToArray()));
+                    }
+
+                    if (result.Count == 0)
+                    {
+                        lines.Add("（IL 解码未得到任何成员项：工厂调用 " + factoryCalls + " 处，无法解码 " + skipped +
+                                  " 处。）");
+                        return null;
+                    }
+                    lines.Add("（成员清单来源：" + RequirementsTypeName + " 的类型初始化器，用 Cecil 离线解码 IL，未加载插件程序集。）");
+                    return result;
+                }
+            }
+            catch (Exception exception)
+            {
+                lines.Add("（用 Cecil 解码 " + RequirementsTypeName + " 失败：" + exception.Message + "，改走反射。）");
+                return null;
+            }
+        }
+
+        /// <summary>
+        /// Reads the literal argument run that immediately precedes the factory call at
+        /// <paramref name="callIndex"/> and returns the values in push order.
+        ///
+        /// The run is located by scanning backwards to the previous stack-clearing boundary
+        /// (<c>dup</c> / <c>stelem.ref</c> / <c>call</c> / <c>stsfld</c>), then replayed forwards.
+        /// Only literals are understood: <c>ldstr</c> becomes a string, <c>ldc.i4*</c> becomes an
+        /// int, and a <c>newarr</c> starts the params string array that collects the remaining
+        /// strings. Because the scan stops at the previous <c>dup</c>, array setup instructions
+        /// (<c>newarr</c> without type, <c>dup</c>, array index) are outside the run and cannot be
+        /// mistaken for arguments. Anything unexpected makes the call site decode as null, which
+        /// is reported as "list unavailable" rather than as a wrong list.
+        /// </summary>
+        private static List<object> ReadStraightLineLiterals(IList<Instruction> instructions, int callIndex)
+        {
+            var start = 0;
+            for (var i = callIndex - 1; i >= 0; i--)
+            {
+                var code = instructions[i].OpCode;
+                if (code == OpCodes.Dup || code == OpCodes.Stelem_Ref ||
+                    code == OpCodes.Call || code == OpCodes.Callvirt || code == OpCodes.Stsfld)
+                {
+                    start = i + 1;
+                    break;
+                }
+            }
+
+            var values = new List<object>();
+            List<string> array = null;
+            for (var i = start; i < callIndex; i++)
+            {
+                var instruction = instructions[i];
+                if (instruction.OpCode == OpCodes.Ldstr)
+                {
+                    if (array != null) array.Add(instruction.Operand as string);
+                    else values.Add(instruction.Operand as string);
+                }
+                else if (instruction.OpCode == OpCodes.Ldc_I4_0) values.Add(0);
+                else if (instruction.OpCode == OpCodes.Ldc_I4_1) values.Add(1);
+                else if (instruction.OpCode == OpCodes.Ldc_I4_2) values.Add(2);
+                else if (instruction.OpCode == OpCodes.Ldc_I4_3) values.Add(3);
+                else if (instruction.OpCode == OpCodes.Ldc_I4_4) values.Add(4);
+                else if (instruction.OpCode == OpCodes.Ldc_I4_S && instruction.Operand is sbyte) values.Add((int)(sbyte)instruction.Operand);
+                else if (instruction.OpCode == OpCodes.Ldc_I4 && instruction.Operand is int) values.Add(instruction.Operand);
+                else if (instruction.OpCode == OpCodes.Newarr)
+                {
+                    array = new List<string>();
+                    values.Add(array);
+                }
+                else if (instruction.OpCode == OpCodes.Nop)
+                {
+                    // Alignment padding carries no literal.
+                }
+                else
+                {
+                    return null;
+                }
+            }
+            return values;
+        }
+
+        /// <summary>Fallback: reflect the requirement list out of the plugin assembly.</summary>
+        private static List<RequirementView> LoadRuntimeRequirementsByReflection(string pluginDll, List<string> lines)
         {
             try
             {
@@ -302,13 +460,16 @@ namespace ZhaDai.Patcher
                 foreach (var item in (IEnumerable)value)
                 {
                     var itemType = item.GetType();
+                    var kind = Read<object>(itemType, item, "Kind");
                     result.Add(new RequirementView(
                         Read<string>(itemType, item, "Type"),
                         Read<string>(itemType, item, "Member"),
-                        Read<object>(itemType, item, "Kind") == null ? "Field" : Read<object>(itemType, item, "Kind").ToString(),
+                        kind == null ? "Field" : kind.ToString(),
                         Read<bool>(itemType, item, "Required"),
                         Read<string[]>(itemType, item, "Parameters") ?? new string[0]));
                 }
+                lines.Add("（成员清单来源：反射加载 " + RequirementsTypeName + "。此方式需要加载插件程序集，" +
+                          "只在 Cecil 解码失败时使用。）");
                 return result;
             }
             catch (Exception exception)

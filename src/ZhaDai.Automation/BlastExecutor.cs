@@ -1,4 +1,5 @@
 using System;
+using System.Collections.Generic;
 using System.Globalization;
 
 namespace ZhaDai.Automation
@@ -91,9 +92,14 @@ namespace ZhaDai.Automation
         private readonly ExecutionPlan plan;
         private readonly ExecutorOptions options;
         private readonly ExecutorStatus status = new ExecutorStatus();
+        private readonly List<int> pathX = new List<int>();
+        private readonly List<int> pathY = new List<int>();
+
+        private const int MaxRetreatSteps = 200;
 
         private long armedTick = -1;
         private long stateTick;
+        private int pathCursor;
         private bool deathRecorded;
         private double deathX;
         private double deathY;
@@ -293,7 +299,7 @@ namespace ZhaDai.Automation
             }
 
             // The last exit check before committing: is there anywhere to run to inside the fuse?
-            if (!HasRetreatCell(game, charge))
+            if (!TryPlanRetreat(game, charge))
             {
                 SkipCharge(game, SkipReason.NoRetreatRoom, "引信时间内退不出爆炸范围，跳过。");
                 return;
@@ -324,6 +330,33 @@ namespace ZhaDai.Automation
                 return;
             }
 
+            // Follow the route planned before the throw. It is followed step by step rather than as a
+            // straight line away from the charge because the fence is a tunnel: going "away" often
+            // means going into rock, and the fuse does not wait for that.
+            while (pathCursor < pathX.Count)
+            {
+                int waypointX = pathX[pathCursor];
+                int waypointY = pathY[pathCursor];
+
+                if (Chebyshev(game.PlayerX, game.PlayerY, waypointX, waypointY) <= 0.9d)
+                {
+                    pathCursor++;
+                    continue;
+                }
+
+                if (game.IsSolid(waypointX, waypointY))
+                {
+                    game.DigTile(waypointX, waypointY);
+                    game.SetMovement(0, 0, false);
+                    return;
+                }
+
+                WalkTowards(game, waypointX, waypointY);
+                return;
+            }
+
+            // No route left (or none was found): the old straight-line retreat is still better than
+            // standing still.
             WalkAway(game, charge.X, charge.Y);
         }
 
@@ -437,44 +470,158 @@ namespace ZhaDai.Automation
         }
 
         /// <summary>
-        /// Is there anywhere within reach that is clear of the blast? The planner already worked this
-        /// out, but the world may have changed, so it is re-checked against live tiles.
+        /// Is there a way out of the blast that can actually be walked in the time the fuse allows?
+        ///
+        /// The planner already worked this out, but the world may have changed since, and "there is
+        /// open space ten tiles away" is not the same as "the player can get there". A fence band is a
+        /// one tile tunnel through solid rock, so a straight line away from the charge usually runs
+        /// into a wall; walking blindly there is how a run turns into a pile of deaths. This searches
+        /// the live tiles for the cheapest reachable escape cell, counting a solid tile as one dig,
+        /// and stores the route for the retreat to follow.
         /// </summary>
-        private bool HasRetreatCell(IGameBridge game, ChargeOrder charge)
+        private bool TryPlanRetreat(IGameBridge game, ChargeOrder charge)
         {
-            int radius = plan.RetreatTiles;
-            for (int dy = -radius; dy <= radius; dy++)
+            pathX.Clear();
+            pathY.Clear();
+            pathCursor = 0;
+
+            int startX = (int)Math.Round(game.PlayerX);
+            int startY = (int)Math.Round(game.PlayerY);
+            int reach = plan.RetreatTiles;
+            int window = reach + 6;
+            int minX = Math.Max(0, charge.X - window);
+            int maxX = Math.Min(game.TileWidth - 1, charge.X + window);
+            int minY = Math.Max(0, charge.Y - window);
+            int maxY = Math.Min(game.TileHeight - 1, charge.Y + window);
+            int width = maxX - minX + 1;
+            int height = maxY - minY + 1;
+
+            int[] steps = new int[width * height];
+            int[] digs = new int[width * height];
+            int[] parent = new int[width * height];
+            for (int i = 0; i < steps.Length; i++)
             {
-                for (int dx = -radius; dx <= radius; dx++)
+                steps[i] = int.MaxValue;
+                parent[i] = -1;
+            }
+
+            int startIndex = Index(startX, startY);
+            if (startIndex < 0)
+            {
+                return false;
+            }
+
+            steps[startIndex] = 0;
+            digs[startIndex] = 0;
+
+            Queue<int> queue = new Queue<int>();
+            queue.Enqueue(startIndex);
+
+            int bestIndex = -1;
+            int bestSteps = int.MaxValue;
+            int bestDigs = int.MaxValue;
+
+            // Four directions only: digging sideways or up is what a player does, and it keeps the
+            // route something the follower below can actually walk.
+            int[] offsetX = { 1, -1, 0, 0 };
+            int[] offsetY = { 0, 0, 1, -1 };
+
+            while (queue.Count > 0)
+            {
+                int current = queue.Dequeue();
+                int currentX = minX + (current % width);
+                int currentY = minY + (current / width);
+
+                if (Math.Max(Math.Abs(currentX - charge.X), Math.Abs(currentY - charge.Y)) >= reach &&
+                    IsEscapeCell(game, currentX, currentY) &&
+                    (steps[current] < bestSteps || (steps[current] == bestSteps && digs[current] < bestDigs)))
                 {
-                    if (Math.Max(Math.Abs(dx), Math.Abs(dy)) < plan.RetreatTiles)
+                    bestIndex = current;
+                    bestSteps = steps[current];
+                    bestDigs = digs[current];
+                }
+
+                for (int i = 0; i < 4; i++)
+                {
+                    int nextX = currentX + offsetX[i];
+                    int nextY = currentY + offsetY[i];
+                    if (nextX < minX || nextX > maxX || nextY < minY || nextY > maxY)
                     {
                         continue;
                     }
 
-                    int tx = charge.X + dx;
-                    int ty = charge.Y + dy;
-                    if (tx < 0 || ty < 0 || tx >= game.TileWidth || ty >= game.TileHeight)
+                    int next = Index(nextX, nextY);
+                    if (next < 0)
                     {
                         continue;
                     }
 
-                    if (game.IsSolid(tx, ty))
+                    bool solid = game.IsSolid(nextX, nextY);
+                    int nextSteps = steps[current] + 1;
+                    int nextDigs = digs[current] + (solid ? 1 : 0);
+
+                    // Five seconds of fuse: more than a couple of dozen tiles of mining is not a plan,
+                    // it is wishful thinking.
+                    if (nextDigs > 24 || nextSteps > MaxRetreatSteps)
                     {
                         continue;
                     }
 
-                    int liquid = game.LiquidKind(tx, ty);
-                    if ((liquid == 2 && !game.PlayerLavaImmune) || (liquid != 0 && game.PlayerCanDrown))
+                    if (nextSteps > steps[next] || (nextSteps == steps[next] && nextDigs >= digs[next]))
                     {
                         continue;
                     }
 
-                    return true;
+                    steps[next] = nextSteps;
+                    digs[next] = nextDigs;
+                    parent[next] = current;
+                    queue.Enqueue(next);
                 }
             }
 
-            return false;
+            if (bestIndex < 0)
+            {
+                return false;
+            }
+
+            int node = bestIndex;
+            while (node >= 0 && node != startIndex)
+            {
+                pathX.Add(minX + (node % width));
+                pathY.Add(minY + (node / width));
+                node = parent[node];
+            }
+
+            pathX.Reverse();
+            pathY.Reverse();
+            return true;
+
+            int Index(int x, int y)
+            {
+                if (x < minX || x > maxX || y < minY || y > maxY)
+                {
+                    return -1;
+                }
+
+                return ((y - minY) * width) + (x - minX);
+            }
+        }
+
+        /// <summary>A cell worth standing in when the charge goes off.</summary>
+        private static bool IsEscapeCell(IGameBridge game, int x, int y)
+        {
+            if (game.IsSolid(x, y))
+            {
+                return false;
+            }
+
+            int liquid = game.LiquidKind(x, y);
+            if (liquid == 2 && !game.PlayerLavaImmune)
+            {
+                return false;
+            }
+
+            return liquid == 0 || !game.PlayerCanDrown;
         }
 
         private void WalkTowards(IGameBridge game, int targetX, int targetY)

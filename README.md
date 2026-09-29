@@ -21,7 +21,14 @@ dotnet run --project src/ZhaDai.Cli -- info "存档.wld"
 # 出一份方案：控制台报告 + JSON + 交互地图
 dotnet run --project src/ZhaDai.Cli -- plan "存档.wld" `
     --json=plan.json --html=plan.html --zplan=plan.zplan
+
+# 算完直接把施工文件和运行配置放进游戏目录（这一步仍然不碰 Terraria.exe）
+dotnet run --project src/ZhaDai.Cli -- arm "存档.wld"
 ```
+
+`arm` 会在 `<泰拉瑞亚目录>\ZhaDai\` 下写出两个文件：`active.zplan`（施工文件）和
+`run.cfg`（运行配置，默认 `enabled=0`）。有隔离段没过泛洪复核时它会**拒绝写出**，
+必须显式加 `--force` 才写——「有段没封住就别照着炸」应该是默认行为，而不是一句提示。
 
 在一张 8400×2400 的困难模式存档上的真实输出：
 
@@ -86,9 +93,23 @@ dotnet run --project tests/ZhaDai.Core.Tests -c Release -- "C:\Users\<你>\Docum
 
 `src/ZhaDai.Automation` 是与游戏无关的执行器状态机（`netstandard2.0`），决策只通过 `IGameBridge` 读写世界，因此可以脱离游戏测试（上面那批模拟测试就是）。
 
-`src/ZhaDai.Patcher` 负责可逆注入：备份 + 哈希清单 + `File.Replace`，并提供 `verify` / `patch-copy` 这类**不用启动游戏**的离线校验命令。
+`src/ZhaDai.Runtime` 是注入进游戏的插件（`net48 x86`），**编译期不引用任何游戏程序集**，全部按名字反射：
 
-> 现状要说清楚：执行器的决策逻辑是在模拟世界里验证过的；注入链路只做了离线校验（`verify`、`patch-copy`），**没有在本机真机跑过 Terraria 完成一次实际施工**。没有验证过的部分就是没有验证过，不要当成能用。
+- 反射用到的每个游戏成员只在 `ReflectionRequirements` 里声明一次，缺了必需项就拒绝启动——一个对「哪里是实心的」「哪里有岩浆」判断错的执行器，比不启动更糟。
+- 这份清单会被 `zhaodai-patcher verify` 直接读出来，逐项对着真实的 `Terraria.exe` 元数据核对。本机 1.4.5.8 的结果是 **62 项全部对上，必需缺失 0、可选缺失 0**。
+- `src/ZhaDai.Patcher` 负责可逆注入：备份 + 哈希清单 + `File.Replace`，并提供 `verify` / `patch-copy` 这类**不用启动游戏**的离线校验命令。
+
+前端和运行时之间没有输入钩子，全靠游戏目录下的文件往来，所以启停不需要热键、也不怕切出去：
+
+| 文件 | 谁写 | 作用 |
+| --- | --- | --- |
+| `ZhaDai\active.zplan` | `zhaodai arm` / 管理器 | 施工文件，第 2 节那种格式 |
+| `ZhaDai\run.cfg` | `zhaodai arm` / 管理器 | `enabled=` 开停，`plan=` 指向施工文件，另有 `allowExplosives`、`maxDeaths`、`hostileDistance` |
+| `ZhaDai\status.txt` | 插件 | 每秒刷新：状态、第几发、已炸、跳过、死亡、清墓碑、当前提示 |
+| `ZhaDai\runtime.log` | 插件 | 自检结果、每一次跳过与死亡的原因 |
+
+> 现状要说清楚：执行器的决策逻辑是在模拟世界里验证过的，注入链路的**成员清单**是对着真实二进制核对过的；但**没有在本机真机跑过 Terraria 完成一次实际施工**。没有验证过的部分就是没有验证过，不要当成能用。插件写不出来状态文件时，先看 `runtime.log` 里的自检输出。
+
 
 ## 前端
 

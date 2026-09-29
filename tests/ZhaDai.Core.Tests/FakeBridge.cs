@@ -163,6 +163,31 @@ internal sealed class FakeBridge : IGameBridge
 
     public void Log(string message) => logs.Add(message);
 
+    /// <summary>Places the player without walking there, for tests that start inside a pocket.</summary>
+    public void Teleport(double x, double y)
+    {
+        PlayerX = x;
+        PlayerY = y;
+        velocityY = 0;
+        pendingDx = 0;
+        pendingDy = 0;
+        pendingJump = false;
+    }
+
+    /// <summary>Fills solid tiles, used to build walls and pockets around a charge.</summary>
+    public void FillSolid(int minX, int minY, int maxX, int maxY)
+    {
+        for (int y = Math.Max(0, minY); y <= Math.Min(TileHeight - 1, maxY); y++)
+        {
+            for (int x = Math.Max(0, minX); x <= Math.Min(TileWidth - 1, maxX); x++)
+            {
+                int index = (y * TileWidth) + x;
+                solid[index] = true;
+                types[index] = 1;
+            }
+        }
+    }
+
     /// <summary>Called after every executor tick: applies the requested movement, then advances the world.</summary>
     public void Advance()
     {

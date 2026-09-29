@@ -21,7 +21,31 @@ internal static class ExecutorTests
         SkipRules(check);
         HostileHold(check);
         DrowningSurfaces(check);
+        RetreatsThroughRock(check);
         ExecutionFileRoundTrip(check);
+    }
+
+    /// <summary>
+    /// The dangerous case: the charge sits in a pocket where every straight line away from it runs
+    /// into rock. The executor has to plan a route before throwing, not walk into the wall, because
+    /// the fuse does not wait. This is what stops a run from becoming a pile of deaths.
+    /// </summary>
+    private static void RetreatsThroughRock(Action<bool, string> check)
+    {
+        FakeBridge bridge = new();
+        bridge.FillSolid(56, 10, 56, 19);
+        bridge.FillSolid(64, 10, 64, 19);
+        bridge.FillSolid(56, 10, 64, 10);
+        bridge.Teleport(60, 19);
+
+        BlastExecutor executor = new(MakePlan(1, standOffset: 0), new ExecutorOptions());
+        Drive(executor, bridge, 3000);
+
+        check(
+            executor.Status.Fired == 1 && executor.Status.Deaths == 0 && executor.Status.BlastHits == 0,
+            $"被岩石围住时也能退出去（开火 {executor.Status.Fired}、死亡 {executor.Status.Deaths}、被炸 {executor.Status.BlastHits}）");
+        check(bridge.DigCount > 0, $"为了逃出去确实挖了岩石（挖了 {bridge.DigCount} 格）");
+        check(executor.Status.Skipped == 0, $"没有白白跳过这一发（跳过 {executor.Status.Skipped}）");
     }
 
     private static void CleanRun(Action<bool, string> check)

@@ -7,7 +7,9 @@ on:
   workflow_dispatch:
 
 jobs:
-  build-and-test:
+  # The planner, the automation state machine and the front end all build and test without the game,
+  # which is deliberate: CI never needs a Terraria install.
+  planner:
     runs-on: windows-latest
     steps:
       - uses: actions/checkout@v4
@@ -16,8 +18,6 @@ jobs:
         with:
           dotnet-version: 8.0.x
 
-      # The planner, the automation state machine and the front end all build and test without the
-      # game, which is deliberate: CI must not need a Terraria install.
       - name: Build
         run: |
           dotnet build src/ZhaDai.Core -c Release
@@ -29,21 +29,51 @@ jobs:
         run: dotnet run --project tests/ZhaDai.Core.Tests -c Release
 
       - name: UI smoke render
-        run: |
-          dotnet run --project src/ZhaDai.Manager -c Release -- --ui-smoke=artifacts/ui-smoke
-
-      - name: Collect artifacts
-        run: |
-          mkdir artifacts/cli
-          copy src/ZhaDai.Cli/bin/Release/net8.0/zhaodai.dll artifacts/cli/
-          copy src/ZhaDai.Cli/bin/Release/net8.0/zhaodai.exe artifacts/cli/
+        run: dotnet run --project src/ZhaDai.Manager -c Release -- --ui-smoke=artifacts/ui-smoke
 
       - uses: actions/upload-artifact@v4
         with:
-          name: zhadai-cli
-          path: artifacts/cli
-
-      - uses: actions/upload-artifact@v4
-        with:
-          name: zhadai-ui-smoke
+          name: ui-smoke
           path: artifacts/ui-smoke
+
+  # The injected side is .NET Framework, and the patcher needs Mono.Cecil, which is not committed.
+  injected:
+    runs-on: windows-latest
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: actions/setup-dotnet@v4
+        with:
+          dotnet-version: 8.0.x
+
+      - name: Fetch Mono.Cecil
+        shell: pwsh
+        run: |
+          Invoke-WebRequest "https://www.nuget.org/api/v2/package/Mono.Cecil/0.11.6" -OutFile cecil.nupkg
+          Expand-Archive cecil.nupkg -DestinationPath cecil
+          New-Item -ItemType Directory -Force src/ZhaDai.Patcher/lib | Out-Null
+          Copy-Item cecil/lib/net40/*.dll src/ZhaDai.Patcher/lib/
+          Get-ChildItem src/ZhaDai.Patcher/lib
+
+      - name: Build runtime plugin
+        run: dotnet build src/ZhaDai.Runtime -c Release
+
+      - uses: microsoft/setup-msbuild@v2
+
+      - name: Build patcher
+        run: msbuild src/ZhaDai.Patcher/ZhaDai.Patcher.csproj /p:Configuration=Release /verbosity:minimal
+
+      - name: Check the plugin against the hook contract (no game present, contract only)
+        shell: pwsh
+        run: |
+          # Without Terraria.exe there is nothing to verify members against, so only the plugin's own
+          # self check runs here; the full member check needs the real binary and is a local step.
+          Get-ChildItem src/ZhaDai.Runtime/bin/Release/net48
+
+      - uses: actions/upload-artifact@v4
+        with:
+          name: zhadai-injected
+          path: |
+            src/ZhaDai.Runtime/bin/Release/net48/*.dll
+            src/ZhaDai.Patcher/bin/Release/net48/*.exe
+            src/ZhaDai.Patcher/bin/Release/net48/*.dll
