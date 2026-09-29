@@ -58,6 +58,12 @@ namespace ZhaDai.Runtime
         /// <summary>Debounce window for the hotkey, in ticks (60 ticks is about a second).</summary>
         private const int HotkeyDebounceTicks = 20;
 
+        /// <summary>How long the key has to stay up before another press counts, in ticks.</summary>
+        private const int HotkeyReleaseTicks = 10;
+
+        /// <summary>Tick the key was last seen down, so a one-frame dropout is not read as a release.</summary>
+        private static long lastHotkeyDownTick;
+
         /// <summary>True once run.cfg has supplied a hotkey; from then on the key owns the on/off switch.</summary>
         private static bool hotkeyConfigured;
 
@@ -103,15 +109,22 @@ namespace ZhaDai.Runtime
                     // across frames; without both guards one tap can start and stop the run in the same
                     // breath, which looks exactly like a dead key.
                     bool hotkeyDown = HotkeyDown();
-                    if (!hotkeyDown)
+                    if (hotkeyDown)
                     {
-                        hostKeyArmed = true;
+                        lastHotkeyDownTick = bridge.Tick;
+                        if (hostKeyArmed && bridge.Tick - lastHotkeyToggleTick >= HotkeyDebounceTicks)
+                        {
+                            hostKeyArmed = false;
+                            lastHotkeyToggleTick = bridge.Tick;
+                            ToggleByHotkey();
+                        }
                     }
-                    else if (hostKeyArmed && bridge.Tick - lastHotkeyToggleTick >= HotkeyDebounceTicks)
+                    else if (bridge.Tick - lastHotkeyDownTick >= HotkeyReleaseTicks)
                     {
-                        hostKeyArmed = false;
-                        lastHotkeyToggleTick = bridge.Tick;
-                        ToggleByHotkey();
+                        // A release only re-arms after it has lasted: the game's key state drops out for a
+                        // frame here and there while the key is still held, and treating that as a release
+                        // would let one long press flip the switch over and over.
+                        hostKeyArmed = true;
                     }
 
                     if (bridge.Tick - lastPoll >= PollIntervalFrames)
