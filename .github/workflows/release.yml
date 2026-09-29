@@ -46,14 +46,20 @@ jobs:
       - name: Zip
         shell: pwsh
         run: |
+          $ErrorActionPreference = "Stop"
           $version = "${{ github.ref_name }}"
           if (-not $version) { $version = "dev" }
 
+          # Compress-Archive does not create the destination folder, and artifacts/ is not committed.
+          New-Item -ItemType Directory -Force artifacts | Out-Null
           New-Item -ItemType Directory -Force staging/injected | Out-Null
           Copy-Item src/ZhaDai.Runtime/bin/Release/net48/ZhaDai.Runtime.dll staging/injected/
           Copy-Item src/ZhaDai.Runtime/bin/Release/net48/ZhaDai.Automation.dll staging/injected/
           Copy-Item src/ZhaDai.Patcher/bin/Release/net48/ZhaDai.Patcher.exe staging/injected/
           Copy-Item src/ZhaDai.Patcher/bin/Release/net48/Mono.Cecil*.dll staging/injected/
+
+          Write-Host "staging trees:"
+          Get-ChildItem -Recurse staging | Select-Object -ExpandProperty FullName
 
           Compress-Archive -Path staging/cli/*      -DestinationPath "artifacts/ZhaDai-cli-$version-win-x64.zip" -Force
           Compress-Archive -Path staging/ui/*       -DestinationPath "artifacts/ZhaDai-ui-$version-win-x64.zip" -Force
