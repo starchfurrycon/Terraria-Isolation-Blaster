@@ -78,6 +78,21 @@ namespace ZhaDai.Automation
 
         /// <summary>Item id of the block used for the plan's plugs, -1 when there are none.</summary>
         public int RequiredBlockItem { get; set; } = -1;
+
+        /// <summary>
+        /// How often the walking route is recomputed. The world changes under the player (that is the
+        /// whole point of the run), but recomputing an A* search every tick would be wasteful.
+        /// </summary>
+        public int PathRecomputeTicks { get; set; } = 30;
+
+        /// <summary>Give up on a route search after this many expanded tiles and walk straight instead.</summary>
+        public int PathNodeLimit { get; set; } = 20000;
+
+        /// <summary>How far around the player and the target the route search may look, in tiles.</summary>
+        public int PathWindowRadius { get; set; } = 96;
+
+        /// <summary>Cost of mining a tile relative to walking one, in tenths: 120 means twelve tiles of walking.</summary>
+        public int PathDigCost { get; set; } = 120;
     }
 
     /// <summary>Read-only progress, so a UI or the runtime overlay can show what is happening.</summary>
@@ -93,6 +108,9 @@ namespace ZhaDai.Automation
 
         public int Skipped { get; internal set; }
 
+        /// <summary>Times a charge had to be thrown again because the player died after the throw.</summary>
+        public int Retries { get; internal set; }
+
         public int Deaths { get; internal set; }
 
         public int BlastHits { get; internal set; }
@@ -107,6 +125,18 @@ namespace ZhaDai.Automation
 
         /// <summary>Set when the supply audit ran, so the report can quote what it found.</summary>
         public string AuditMessage { get; internal set; } = string.Empty;
+
+        /// <summary>Routes planned by the A* search, and how many times a route had to be abandoned.</summary>
+        public int RoutesPlanned { get; internal set; }
+
+        /// <summary>Times the route had to be recomputed because the player could not follow it.</summary>
+        public int RouteRestarts { get; internal set; }
+
+        /// <summary>Tiles the route itself had to mine. The blast crater is counted separately.</summary>
+        public int RouteDigs { get; internal set; }
+
+        /// <summary>Last thing the path search had to say, kept for the log.</summary>
+        public string LastRouteNote { get; internal set; } = string.Empty;
 
         public long Ticks { get; internal set; }
 
@@ -133,6 +163,7 @@ namespace ZhaDai.Automation
         private readonly List<int> pathX = new List<int>();
         private readonly List<int> pathY = new List<int>();
 
+        private const int RetreatDigWeight = 80;
         private const int MaxRetreatSteps = 200;
 
         private long armedTick = -1;
@@ -143,8 +174,25 @@ namespace ZhaDai.Automation
         private double deathY;
         private bool stopped;
         private bool audited;
+        private int lastArmedCharge = -1;
         private int digIndex;
         private long digTick;
+
+        // The walking route: an A* path recomputed when it goes stale, plus the cursor into it.
+        private readonly PathOptions pathOptionsForDig = new PathOptions();
+        private readonly List<int> travelX = new List<int>();
+        private readonly List<int> travelY = new List<int>();
+        private int travelCursor;
+        private int travelGoalX = int.MinValue;
+        private int travelGoalY = int.MinValue;
+        private long travelTick = -1;
+        private bool travelValid;
+
+        /// <summary>Diagnostics for the status line: how many routes were planned and how often they failed.</summary>
+        private int travelSteps;
+        private int routeRestarts;
+        private int walkStuck;
+        private string lastPathNote = string.Empty;
 
         public BlastExecutor(ExecutionPlan plan, ExecutorOptions options)
         {
@@ -518,7 +566,17 @@ namespace ZhaDai.Automation
 
             game.SelectSlot(slot);
             game.ThrowDynamiteAt(charge.X, charge.Y);
-            status.Fired++;
+            if (status.ChargeIndex == lastArmedCharge)
+            {
+                // Died after the throw and came back for the same charge: that is a retry, not a new
+                // charge, so the fire count stays comparable to the plan's charge count.
+                status.Retries++;
+            }
+            else
+            {
+                lastArmedCharge = status.ChargeIndex;
+                status.Fired++;
+            }
             status.LastSkip = SkipReason.None;
             armedTick = game.Tick;
             SetState(ExecutorState.Retreating, SkipReason.None, "已丢出雷管，撤到 " + plan.RetreatTiles + " 格外。");
@@ -558,6 +616,7 @@ namespace ZhaDai.Automation
                 if (game.IsSolid(waypointX, waypointY))
                 {
                     game.DigTile(waypointX, waypointY);
+                    status.RouteDigs++;
                     game.SetMovement(0, 0, false);
                     return;
                 }
@@ -716,6 +775,13 @@ namespace ZhaDai.Automation
                 parent[i] = -1;
             }
 
+            while (game.IsSolid(startX, startY) && startY > 4)
+            {
+                // The player's rounded tile can be the floor they are standing on. A search that starts
+                // inside rock plans a tunnel out of its own feet.
+                startY--;
+            }
+
             int startIndex = Index(startX, startY);
             if (startIndex < 0)
             {
@@ -767,18 +833,36 @@ namespace ZhaDai.Automation
                         continue;
                     }
 
-                    bool solid = game.IsSolid(nextX, nextY);
-                    int nextSteps = steps[current] + 1;
-                    int nextDigs = digs[current] + (solid ? 1 : 0);
-
-                    // Five seconds of fuse: more than a couple of dozen tiles of mining is not a plan,
-                    // it is wishful thinking.
-                    if (nextDigs > 24 || nextSteps > MaxRetreatSteps)
+                    // Never plan a retreat that runs through lava: drowning in a blast crater is one
+                    // thing, walking into magma while a fuse burns is entirely avoidable.
+                    if (game.LiquidKind(nextX, nextY) == 2 && !game.PlayerLavaImmune)
                     {
                         continue;
                     }
 
-                    if (nextSteps > steps[next] || (nextSteps == steps[next] && nextDigs >= digs[next]))
+                    bool solid = game.IsSolid(nextX, nextY);
+                    if (solid && !new TilePathfinder(game, pathOptionsForDig).CanDig(nextX, nextY))
+                    {
+                        // Rock the pickaxe cannot break is a wall, not a tunnel: routing through it
+                        // would plan a retreat the player can never walk.
+                        continue;
+                    }
+
+                    int nextDigs = digs[current] + (solid ? 1 : 0);
+
+                    // Weighted rather than lexicographic: one tile of mining costs the same as eight tiles
+                    // of walking. Counting steps first made the search tunnel sideways through the floor
+                    // because ten dug tiles is "shorter" than eleven walked ones.
+                    int nextSteps = steps[current] + 10 + (solid ? RetreatDigWeight : 0);
+
+                    // Five seconds of fuse: more than a couple of dozen tiles of mining is not a plan,
+                    // it is wishful thinking.
+                    if (nextDigs > 24 || nextSteps > MaxRetreatSteps * 10)
+                    {
+                        continue;
+                    }
+
+                    if (nextSteps >= steps[next])
                     {
                         continue;
                     }
@@ -835,7 +919,139 @@ namespace ZhaDai.Automation
             return liquid == 0 || !game.PlayerCanDrown;
         }
 
+        /// <summary>
+        /// Walks to a tile along a planned route. Straight-line walking is kept as the fallback for the
+        /// cases the search cannot solve inside its window, so the executor never freezes just because
+        /// the pathfinder gave up.
+        /// </summary>
         private void WalkTowards(IGameBridge game, int targetX, int targetY)
+        {
+            int px = (int)Math.Round(game.PlayerX);
+            int py = (int)Math.Round(game.PlayerY);
+
+            // Rounding can land one tile low, inside the floor. A search that starts inside rock will
+            // happily mine its way out of the floor tile by tile, so walk the start up to open air.
+            if (game.IsSolid(px, py))
+            {
+                py--;
+            }
+
+            if (targetX == px && targetY == py)
+            {
+                game.SetMovement(0, 0, false);
+                return;
+            }
+
+            bool stale = !travelValid ||
+                travelGoalX != targetX ||
+                travelGoalY != targetY ||
+                travelCursor >= travelX.Count ||
+                (options.PathRecomputeTicks > 0 && game.Tick - travelTick > options.PathRecomputeTicks);
+
+            if (stale)
+            {
+                PlanTravel(game, px, py, targetX, targetY);
+                if (!travelValid)
+                {
+                    WalkStraight(game, targetX, targetY);
+                    return;
+                }
+            }
+
+            // Skip waypoints already reached or passed, so a route does not send the player backwards.
+            while (travelCursor < travelX.Count &&
+                Math.Max(Math.Abs(travelX[travelCursor] - px), Math.Abs(travelY[travelCursor] - py)) <= 0)
+            {
+                travelCursor++;
+            }
+
+            if (travelCursor >= travelX.Count)
+            {
+                WalkStraight(game, targetX, targetY);
+                return;
+            }
+
+            int waypointX = travelX[travelCursor];
+            int waypointY = travelY[travelCursor];
+            int stepX = Math.Sign(waypointX - px);
+            int stepY = Math.Sign(waypointY - py);
+
+            // The route is allowed to go through rock, so a solid waypoint is a mining target rather
+            // than an obstacle. Reaching for the next tile instead would leave the player stuck against
+            // a wall the route already decided to break.
+            if (game.IsSolid(waypointX, waypointY))
+            {
+                if (Math.Max(Math.Abs(waypointX - px), Math.Abs(waypointY - py)) <= 1)
+                {
+                    game.DigTile(waypointX, waypointY);
+                    status.RouteDigs++;
+                    game.SetMovement(0, 0, false);
+                    return;
+                }
+
+                routeRestarts++;
+                PlanTravel(game, px, py, targetX, targetY);
+                walkStuck++;
+                if (!travelValid)
+                {
+                    WalkStraight(game, targetX, targetY);
+                    return;
+                }
+            }
+
+            game.SetMovement(stepX, stepY, stepY < 0);
+        }
+
+        /// <summary>
+        /// Builds a fresh route. Failure is not fatal: the caller falls back to the old straight-line
+        /// behaviour, which is worse but never gets stuck on a search that found nothing.
+        /// </summary>
+        private void PlanTravel(IGameBridge game, int px, int py, int targetX, int targetY)
+        {
+            travelTick = game.Tick;
+            travelGoalX = targetX;
+            travelGoalY = targetY;
+            travelCursor = 0;
+            travelX.Clear();
+            travelY.Clear();
+            travelValid = false;
+
+            PathOptions pathOptions = new PathOptions
+            {
+                WindowRadius = options.PathWindowRadius,
+                NodeLimit = options.PathNodeLimit,
+                DigCost = options.PathDigCost,
+            };
+
+            TilePathfinder finder = new TilePathfinder(game, pathOptions);
+            PathResult path = finder.FindPath(px, py, targetX, targetY);
+            if (!path.Found || path.Waypoints.Count == 0)
+            {
+                lastPathNote = "寻路失败：" + path.Failure + "（退回直线走法）";
+                return;
+            }
+
+            for (int i = 0; i < path.Waypoints.Count; i++)
+            {
+                travelX.Add(path.Waypoints[i].X);
+                travelY.Add(path.Waypoints[i].Y);
+            }
+
+            travelValid = true;
+            travelSteps++;
+            walkStuck = 0;
+            status.RoutesPlanned = travelSteps;
+            status.RouteRestarts = routeRestarts;
+            status.LastRouteNote = lastPathNote;
+            lastPathNote = string.Format(
+                CultureInfo.InvariantCulture,
+                "路线 {0} 步，其中要挖 {1} 格",
+                path.Waypoints.Count,
+                path.DigTiles);
+        }
+
+        /// <summary>The old behaviour, kept as the fallback when the search finds nothing.</summary>
+        private void WalkStraight(IGameBridge game, int targetX, int targetY)
         {
             int dx = Math.Sign(targetX - game.PlayerX);
             int dy = Math.Sign(targetY - game.PlayerY);

@@ -1,0 +1,113 @@
+# 收尾计划（进行中）
+
+目标见会话 goal（A\* 寻路 / 保护建筑加固 / 封堵清单 / 真机脚手板 / 收尾发版）。
+这份文件是跨轮次的工作记忆：每完成一项就把结论写回这里，不要重复劳动。
+
+## 已完成（v0.1.1-alpha）
+
+- 物块可处理性判定 `src/ZhaDai.Core/World/TileCatalog.cs`：Blast / Dig / Blocked，闸门抄自
+  `Player.GetPickaxeDamage`（Player.cs:54570-54648）与 `WorldGen.CanKillTile`（WorldGen.cs:62724-62831）；
+  68 项 `tileNoFail`、398 项 `tileFrameImportant` 由源码生成。
+- 规划器保护摆位：`ProtectionLevel`（strict/structures/none）+ 躲不开的封带格改挖；
+  实测 `草剑挥打`：none 10,347 发 / 0 挖；strict 10,535 发 / 78 挖（65% 镐力）。
+- 执行器接管前盘点（雷管/镐力/封堵物块）+ `DigFence` 挖掘阶段；`Item.pick` 进反射成员表。
+- 检查项 103，`tools/verify-all.ps1` 8/8，发行 v0.1.1-alpha。
+
+## 待做 1：A\* 寻路（最高优先）
+
+现状：`src/ZhaDai.Automation/BlastExecutor.cs` 的 `WalkTowards` 是朝目标直走、`TryPlanRetreat` 是受限 BFS。
+
+设计：
+- 新增 `src/ZhaDai.Automation/TilePathfinder.cs`（netstandard2.0，不依赖 Core）：
+  - A\*，8 邻接；对角移动要求两个正交邻居都可通行，避免穿角。
+  - 代价：空气 1；固体 = `DigCost`（默认 12）且该物块必须挖得动（用下面的镐力闸门表）；
+    岩浆 = 不可通行；水 = 2（可选游泳）；向上要跳 = 1.5；下落 = 1 + 落差惩罚。
+  - 节点上限（默认 4000）与窗口半径（默认 64），超限返回「找不到」，调用方降级为旧行为。
+  - 世界读取全部走 `IGameBridge`（`IsSolid`/`TileType`/`LiquidKind`），保证可测。
+- `ExecutorOptions`：`DigCost`、`PathNodeLimit`、`PathWindowRadius`、`PathRecomputeTicks`。
+- 在 `TilePathfinder` 内加最小镐力闸门表（26 挖不动；211→200；226/237→210；111/223→150；
+  108/222→110；107/221→100；地牢砖 41/43/44/677/678/679→100；25/203/117/58/77→65；22/204/56→55；
+  37→50；其余 0），用到 `IGameBridge.BestPickPower`。
+- 接入点：`TickGoToStand`（走向站位）、`TickDigFence`（走向挖掘格）、`TryPlanRetreat`（撤离）。
+  跟随方式：保留 `SetMovement(dx,dy,jump)`，每 `PathRecomputeTicks`（默认 30）重算一次，
+  沿路径取下一个 waypoint；到不了的 waypoint 就挖。
+- 测试（`tests/ZhaDai.Core.Tests`）：假世界里加一堵墙 → 新旧对比「挖穿格数更少」；
+  岩浆池绕行；一条只有斜向通道的走廊能通过（旧直线走法会卡住）；找不到路时降级不崩。
+
+## 待做 2：保护建筑加固
+
+- 墙体：`TileGrid` 已有 `wall`（`WallAt`？没有就补）。规划器统计爆破范围内「非自然墙」格数
+  （自然墙列表：1-16、22、40、54、62-70、187；其余算玩家墙），摆位时把玩家墙按 `IsPlayerBuilt`
+  同级对待，并在 notes 里报出「炸掉的玩家墙格数」。
+- 挖掘侧同样受限：`DigReason.Collateral` 的格子如果本身是结构物/玩家建材（不该发生，但要断言），
+  改为 `Blocked` 并点名。
+- 结构和玩家建材周围加 1 格缓冲（`protectionBuffer`），避免爆炸擦到贴墙的家具。
+- 测试：合成世界（已有 `PlanProtectionTests.cs`）加墙与缓冲两条。
+
+## 待做 3：不可感染物块封堵清单
+
+- 规划器：对每个「带草前沿物块下方是空气且竖井出口通到感染侧」的位置产出 `PlugOrder(x,y,item)`，
+  材料选不可感染块（默认木材 30 / 物品 9），把 `PlugTiles`、`RequiredPlugBlocks`、`PlugItemId`
+  写进 summary 与施工文件（`#PLUG x y item=`）。
+- 执行器：`PlaceBlock` 进 `IGameBridge`（运行时用 `Player.PlaceThing`/`ItemCheck` 路径，反射成员表补条目），
+  在雷管阶段前放置；`RequiredBlocks`/`RequiredBlockItem` 盘点随之生效。
+- 测试：合成世界断根场景（vine-reach=0 时给出封堵清单）。
+
+## 待做 4：真机检验脚手板（用户已同意方案）
+
+用户已确认：可以用后台、必须独立存档目录、不得影响既有存档。
+- `tools/live-check.ps1`：
+  1. 把指定 `.wld` 复制到 `%TEMP%\zhadai-live\<名字>\Worlds\`，并复制 `Players\`（角色）。
+  2. `Start-Process Terraria.exe -ArgumentList "-savedirectory","<副本目录>"`（先确认 1.4.5.8 支持该参数：
+     用 Cecil/IL 找 `Main` 里的命令行解析，搜 `-savedirectory` 字符串）。
+  3. 写入副本目录外层的 `ZhaDai\run.cfg`（`enabled=0`），装好插件（`zhaodai-patcher install --game=<游戏目录>`，
+     它会自动备份；结束时 `restore`）。
+  4. 只轮询 `status.txt`/`runtime.log`，记录「接管前盘点」「前 N 发」「死亡次数」「自伤次数」。
+  5. 结束：`restore` 插件、删副本目录；原 `Documents\My Games\Terraria` 全程只读。
+- 需要用户配合的点：读档与把 `enabled` 改成 1（不注入键鼠），或者用户明确同意我最小化窗口后自动读档。
+
+## 收尾
+
+- `tools/verify-all.ps1` 加一步「寻路对比」；更新 README/CHANGELOG；提交推送；发 v0.1.2-alpha。
+
+## 已完成（本轮）：A* 寻路（2026-09-29）
+
+- 新增 `src/ZhaDai.Automation/TilePathfinder.cs`：8 邻接 A*（二叉堆，netstandard2.0 手写），
+  代价=空气 10 / 挖一格 120 / 跳跃 +6 / 水 18 / 蜂蜜 24；岩浆禁行（有岩浆免疫才放行）；
+  对角要两个正交邻格都通（防穿角）；下落是合法走法但落点必须是空气（早期版本允许落进实心块，
+  结果 A* 会「挖地板」当地道，实测多挖 66 格）；窗口 96 格、节点上限 20000，超限/无路则降级。
+- 镐力闸门进 Automation：`TilePathfinder.RequiredPickPower`（祭坛不可挖、神庙砖 210、叶绿 200、
+  精金 150、秘银 110、钴矿/地牢砖 100、黑檀石 65…），挖不动的物块是墙不是隧道。
+- `WalkTowards` 换成「A* 路线 + 跟随」（走位、走向挖掘格、撤离跟随三处共用），每 30 tick 重算；
+  找不到路时退回原来的直线走法，绝不卡死。状态新增 `RoutesPlanned`/`RouteRestarts`/`RouteDigs`/`LastRouteNote`。
+- 撤离 BFS：起点不再落在玩家脚下的地板里；挖一格按 8 步计（原来先比步数，会沿地板挖过去）；
+  岩浆与挖不动的岩石都禁行。
+- 新增 `tests/ZhaDai.Core.Tests/PathfinderTests.cs`：墙有缺口时 0 挖通过、整条通道是岩浆时不硬闯、
+  黑曜石皮放行、神庙砖在 100%% 镐力下当墙而 210%% 下当隧道、完全封死时只挖最薄一层、
+  执行器端到端「绕过去 + 炸完 + 不死」。
+- 执行器计数语义修正：同一发因死亡重丢记 `Retries`，`Fired` 仍按「发数」计，不再被重试灌水。
+
+下一步：待做 2 保护建筑加固（墙 + 缓冲）→ 待做 3 封堵清单 → 待做 4 真机脚手板。
+
+## 已完成（第 2 轮）：保护建筑加固（墙体 + 缓冲 + 统计）
+
+- 读档不再跳过墙体字节：`TileRun` 带 `Wall`，`TileGrid` 用稀疏表只存「非世界生成」的墙
+  （大地图两千万格，真有人建的墙也就几万格）。`SetWall`/`HasBuiltWallAt`/`BuiltWallHistogram`。
+- 自然墙表从反编译源码**生成**：`WallID` 里名字带 `Unsafe` 的全是 WorldGen 生成的墙，加上
+  `WallID.Conversion` 的九个家族与 `CaveWall`(170)/`CaveWall2`(171)，共 128 个 id。
+  其余（Wood 4、GrayBrick 5、Glass 21、Planked 27…）按玩家自建算。
+- 用真存档核对过（`--walls` 诊断入口）：第一版只取 Conversion 表，误判 **2,031,645 格**为玩家墙
+  （15 MudUnsafe 85.8 万、9 粉地牢 18 万、180 花岗岩 15.4 万…全是世界生成的）；改成 Unsafe 表后
+  只剩 **48,401 格**（34 砂岩砖金字塔、27 木板、5 灰砖…），量级回到正常。
+- 摆位把墙当成结构级保护（有两个值：1 玩家建材、2 结构/墙），并加 `ProtectionBuffer`（默认 1 格，
+  0..3）。缓冲**只长在墙与玩家建材周围**：一开始长在所有 frame-important 格上，78 格改挖直接变成
+  28,063 格 / 463 分钟——树和洞穴装饰也是 frame-important，那样等于整条带没法炸。
+- 统计与报告：JSON 增加 `builtWallTilesInBlast`/`builtWallTilesInWorld`/`builtWallHistogram`，
+  文本报告多一行「墙体也一起保护：… 落在爆破范围内的玩家墙 N 格」。CLI 加 `--protect-buffer=<0..3>`。
+- 实测 草剑挥打：strict（含 1 格缓冲）**10,535 发 / 78 格改挖**，与加墙保护前完全一致，
+  落在爆破范围内的玩家墙 **0 格**；none 对照 10,345 发 / 0 挖。也就是说这张图上墙保护是免费的
+  （带子没穿过别人的建筑），但真穿过去时会挡住并改挖。
+- 测试新增：严格保护下玩家墙 0 格被炸、不保护时同一堵墙会被炸开、宁愿多挖不炸墙、如实报出世界墙数、
+  1 格缓冲不比不留缓冲更省、改挖清单无负数镐击。
+
+下一步：待做 3 封堵清单 → 待做 4 真机脚手板 → 收尾。

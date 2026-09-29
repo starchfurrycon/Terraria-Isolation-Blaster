@@ -133,6 +133,21 @@ public static class TileCatalog
 
     private static readonly HashSet<ushort> InfectionVectorSet = [.. InfectionVectors];
 
+    /// <summary>
+    /// Wall ids the world generated rather than ones a player built: every wall whose WallID name
+    /// contains "Unsafe" (WorldGen's own unsafe walls are exactly the ones it places and the biome spread
+    /// rewrites), the WallID.Conversion families, and the two plain cave walls. Checked against a real
+    /// save: this covers every bulk wall in the world, leaving only genuinely crafted ones -- wood, gray
+    /// brick, glass, planked -- flagged as somebody's building.
+    /// <c>WallID.Conversion</c> families (grass, stone, dirt, snow, ice, sandstone, hardened sand, pure
+    /// sand, and the four "new wall" sets), read straight out of the decompiled source: those are the
+    /// walls worldgen places and the biome spread rewrites. Anything else -- wood, brick, dungeon or
+    /// temple wall, glass, planked -- counts as somebody's building, because the game never records who
+    /// placed a wall and blowing up a house is worse than mining a few extra tiles.
+    /// </summary>
+    private static readonly ushort[] NaturalWallIds = [1, 2, 3, 7, 8, 9, 13, 14, 15, 16, 28, 40, 48, 49, 50, 51, 52, 53, 54, 55, 56, 57, 58, 59, 61, 62, 63, 64, 65, 66, 67, 68, 69, 70, 71, 79, 80, 81, 83, 86, 87, 94, 95, 96, 97, 98, 99, 170, 171, 178, 180, 185, 187, 188, 189, 190, 191, 192, 193, 194, 195, 196, 197, 198, 199, 200, 201, 202, 203, 204, 205, 206, 207, 208, 209, 210, 211, 212, 213, 214, 215, 216, 217, 218, 219, 220, 221, 222, 244, 246, 248, 249, 262, 264, 265, 266, 268, 269, 274, 275, 276, 277, 278, 279, 280, 281, 282, 283, 288, 289, 290, 291, 292, 293, 294, 295, 300, 301, 302, 303, 304, 305, 306, 307, 308, 309, 310, 349];
+
+    private static readonly HashSet<ushort> NaturalWallSet = [.. NaturalWallIds];
     private static readonly HashSet<ushort> NaturalSet = [.. NaturalNonConvertible];
 
     private static readonly HashSet<ushort> CraftedSet = [.. CraftedBuildingBlocks];
@@ -342,6 +357,9 @@ public static class TileCatalog
     /// Runs every tile type through <see cref="Classify"/> so the test suite can assert the shape of the
     /// table rather than trusting a handful of hand-picked examples.
     /// </summary>
+    /// <summary>True when the wall is worldgen's own, so the planner may blast through it.</summary>
+    public static bool IsNaturalWall(ushort wall) => wall == 0 || NaturalWallSet.Contains(wall);
+
     public static IEnumerable<ushort> AllKnownTypes() => SoftSet
         .Concat(FrameImportantSet)
         .Concat(InfectionVectorSet)

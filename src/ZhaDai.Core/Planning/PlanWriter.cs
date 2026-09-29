@@ -81,6 +81,8 @@ public static class PlanWriter
         writer.WriteNumber("chargesWithCollateral", summary.ChargesWithCollateral);
         writer.WriteNumber("protectedTilesInBlast", summary.ProtectedTilesInBlast);
         writer.WriteNumber("playerBlocksInBlast", summary.PlayerBlocksInBlast);
+        writer.WriteNumber("builtWallTilesInBlast", summary.BuiltWallTilesInBlast);
+        writer.WriteNumber("builtWallTilesInWorld", summary.BuiltWallTilesWorld);
         writer.WriteNumber("estimatedDigSeconds", summary.EstimatedDigSeconds);
         writer.WriteNumber("dynamiteStacks", summary.DynamiteStacks);
         writer.WriteNumber("seedsDestroyedByBlast", summary.SeedsDestroyedByBlast);

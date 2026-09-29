@@ -333,18 +333,27 @@ public static class WorldFileReader
                     throw new InvalidDataException($"Tile RLE exceeded column {x} at row {y}.");
                 }
 
-                if (tile.Active || tile.HasLiquid)
+                if (tile.Active || tile.HasLiquid || tile.Wall != 0)
                 {
                     for (int row = y; row <= maxY; row++)
                     {
-                        tiles.SetTile(
-                            (row * width) + x,
-                            tile.Active ? tile.Type : (ushort)0,
-                            tile.Active,
-                            tile.Actuated,
-                            tile.Slope,
-                            tile.Liquid,
-                            tile.LiquidAmount);
+                        int index = (row * width) + x;
+                        if (tile.Active || tile.HasLiquid)
+                        {
+                            tiles.SetTile(
+                                index,
+                                tile.Active ? tile.Type : (ushort)0,
+                                tile.Active,
+                                tile.Actuated,
+                                tile.Slope,
+                                tile.Liquid,
+                                tile.LiquidAmount);
+                        }
+
+                        if (tile.Wall != 0)
+                        {
+                            tiles.SetWall(index, tile.Wall);
+                        }
                     }
                 }
 
@@ -393,9 +402,10 @@ public static class WorldFileReader
             }
         }
 
+        ushort wall = 0;
         if ((header1 & 0x04) != 0)
         {
-            Skip(reader, 1); // low wall byte
+            wall = reader.ReadByte();
             if ((header3 & 0x10) != 0)
             {
                 Skip(reader, 1); // wall paint
@@ -412,7 +422,7 @@ public static class WorldFileReader
 
         if (version >= 222 && (header3 & 0x40) != 0)
         {
-            Skip(reader, 1); // high wall byte
+            wall |= (ushort)(reader.ReadByte() << 8);
         }
 
         int repetitions = (header1 >> 6) switch
@@ -428,7 +438,7 @@ public static class WorldFileReader
 
         bool actuated = (header2 & 0x02) != 0;
         int slope = (header2 >> 4) & 0x07;
-        return new TileRun(active, type, repetitions, actuated, slope, liquid, liquidAmount);
+        return new TileRun(active, type, repetitions, actuated, slope, liquid, liquidAmount, wall);
     }
 
     private static bool[] ReadPackedBooleans(BinaryReader reader)
@@ -507,7 +517,8 @@ public static class WorldFileReader
         bool Actuated,
         int Slope,
         LiquidKind Liquid,
-        byte LiquidAmount)
+        byte LiquidAmount,
+        ushort Wall)
     {
         public bool HasLiquid => LiquidAmount > 0 && Liquid != LiquidKind.None;
     }

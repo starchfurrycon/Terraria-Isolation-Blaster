@@ -62,6 +62,40 @@ internal static class PlanProtectionTests
         check(
             wall.Summary.EstimatedDigSeconds > 0,
             "改挖的时间也算进了施工预估");
+
+        // Walls: the game never records who placed a wall, so the table decides. Wood (4) is craftable and
+        // therefore somebody's; the worldgen walls are all named *Unsafe and stay blastable. Here a wood
+        // wall runs straight through the band, and the only way to keep it is to mine those tiles.
+        BlastPlan walled = Plan(width, height, seedX, seedY, ProtectionLevel.Strict, chestOffset: -1, wallRow: true);
+        BlastPlan walledNone = Plan(width, height, seedX, seedY, ProtectionLevel.None, chestOffset: -1, wallRow: true);
+        check(
+            walled.Summary.BuiltWallTilesInBlast == 0,
+            $"严格保护下玩家墙一格都没被炸到（实际 {walled.Summary.BuiltWallTilesInBlast} 格）");
+        check(
+            walledNone.Summary.BuiltWallTilesInBlast > 0,
+            $"不保护时同一堵墙会被炸开（实际 {walledNone.Summary.BuiltWallTilesInBlast} 格）");
+        check(
+            walled.Summary.DigTiles > 0,
+            $"宁愿多挖也不炸墙（改挖 {walled.Summary.DigTiles} 格）");
+        check(
+            walled.Summary.BuiltWallTilesWorld > 0,
+            $"计划如实报出世界里有多少玩家墙（{walled.Summary.BuiltWallTilesWorld} 格）");
+
+        BlastPlan tight = Plan(
+            width,
+            height,
+            seedX,
+            seedY,
+            ProtectionLevel.Strict,
+            chestOffset: -1,
+            wallRow: true,
+            protectionBuffer: 0);
+        check(
+            walled.Summary.DigTiles >= tight.Summary.DigTiles,
+            $"1 格缓冲不会比不留缓冲更省（缓冲 {walled.Summary.DigTiles} 格 / 不留 {tight.Summary.DigTiles} 格）");
+        check(
+            walled.DigOrders.All(dig => dig.Hits >= 0),
+            "改挖清单里没有负数镐击（处理不掉的格子走 Blocked，不算进挖掘）");
     }
 
     private static BlastPlan Plan(
@@ -72,6 +106,8 @@ internal static class PlanProtectionTests
         ProtectionLevel protection,
         int chestOffset,
         bool woodBox = false,
+        bool wallRow = false,
+        int protectionBuffer = 1,
 
         int pickPower = TileCatalog.PreHardmodePickPower)
     {
@@ -82,6 +118,16 @@ internal static class PlanProtectionTests
         if (chestOffset > 0)
         {
             tiles.Set(seedX + chestOffset, seedY, 21, active: true);
+        }
+
+        if (wallRow)
+        {
+            // A wood wall straight through the band. Wall id 4 is WallID.Wood: craftable, so the planner
+            // treats it as somebody's building, unlike the worldgen walls whose names all end in Unsafe.
+            for (int x = seedX - 20; x <= seedX + 20; x++)
+            {
+                tiles.SetWall(tiles.Index(x, seedY), 4);
+            }
         }
 
         if (woodBox)
@@ -115,6 +161,7 @@ internal static class PlanProtectionTests
         BlastPlanOptions options = new BlastPlanOptions
         {
             Protection = protection,
+            ProtectionBuffer = protectionBuffer,
             PickPower = pickPower,
             VineReach = 0,
         };

@@ -62,6 +62,13 @@ public sealed record BlastPlanOptions
     public ProtectionLevel Protection { get; init; } = ProtectionLevel.Strict;
 
     /// <summary>
+    /// Extra tiles of margin around anything protected. One tile keeps a blast from clipping the block
+    /// next to a chest, which is enough to stop the contents being thrown around; zero restores the old
+    /// tight fit. Raising it past three buys little and costs a lot of charges, so it is capped there.
+    /// </summary>
+    public int ProtectionBuffer { get; init; } = 1;
+
+    /// <summary>
     /// Pick power the plan assumes when deciding whether a tile that survives dynamite can be dug out
     /// instead. The default of 100 is the Molten Pickaxe, the best a pre-hardmode character can have;
     /// raise it to 210 (Picksaw) to plan for the endgame, lower it to 65 (Nightmare Pickaxe) for a run
@@ -81,6 +88,14 @@ public sealed record BlastPlanOptions
                 Clearance,
                 $"Clearance must be at least {MinimumClearance}: a thinner band is reachable by the ordinary " +
                 $"{InfectionModel.SpreadReach}-tile spread.");
+        }
+
+        if (ProtectionBuffer < 0 || ProtectionBuffer > 3)
+        {
+            throw new ArgumentOutOfRangeException(
+                nameof(ProtectionBuffer),
+                ProtectionBuffer,
+                "Protection buffer must be between 0 and 3 tiles.");
         }
 
         if (BlastRadius < 2)
@@ -163,7 +178,8 @@ public sealed record BlastCharge(
     int StandY,
     bool RetreatAvailable,
     int ProtectedTilesInBlast = 0,
-    int PlayerBlocksInBlast = 0);
+    int PlayerBlocksInBlast = 0,
+    int BuiltWallTilesInBlast = 0);
 
 /// <summary>One fence: the cleared band around a single infection front.</summary>
 public sealed record FenceSection(
@@ -210,6 +226,9 @@ public sealed record BlastPlanSummary(
     int ChargesWithCollateral = 0,
     int ProtectedTilesInBlast = 0,
     int PlayerBlocksInBlast = 0,
+    int BuiltWallTilesInBlast = 0,
+    int BuiltWallTilesProtected = 0,
+    int BuiltWallTilesWorld = 0,
     long EstimatedDigSeconds = 0);
 
 /// <summary>

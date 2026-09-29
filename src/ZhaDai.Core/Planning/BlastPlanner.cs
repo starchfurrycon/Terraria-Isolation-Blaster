@@ -92,7 +92,7 @@ public static class BlastPlanner
         int[] blastOffsets = BuildBlastOffsets(opts.BlastRadius);
 
         // What a charge would break beyond the fence: 0 harmless, 1 crafted block, 2 structure.
-        byte[] collateral = BuildCollateralMap(tiles);
+        byte[] collateral = BuildCollateralMap(tiles, opts.ProtectionBuffer);
 
         List<FenceSection> sections = [];
         List<BlastCharge> charges = [];
@@ -109,7 +109,7 @@ public static class BlastPlanner
         long blastDestroyed = 0;
         int blastImmuneInBlast = 0;
         int vineAnchors = 0;
-        FenceTally totals = new();
+        FenceTally totals = new() { BuiltWallsWorld = tiles.BuiltWallCount };
 
         foreach (SeedCluster cluster in clusters)
         {
@@ -350,6 +350,9 @@ public static class BlastPlanner
             ChargesWithCollateral: totals.ChargesWithCollateral,
             ProtectedTilesInBlast: totals.ProtectedInBlast,
             PlayerBlocksInBlast: totals.PlayerBlocksInBlast,
+            BuiltWallTilesInBlast: totals.BuiltWallsInBlast,
+            BuiltWallTilesProtected: tiles.BuiltWallCount,
+            BuiltWallTilesWorld: tiles.BuiltWallCount,
             EstimatedDigSeconds: EstimateDigSeconds(totals));
 
         if (vineAnchors > 0)
@@ -568,6 +571,15 @@ public static class BlastPlanner
                 $"按 {DescribeProtection(opts.Protection)} 保护级别摆位：每一发雷管的爆破范围都避开了结构物与玩家建材，" +
                 "炸不到房子、箱子、门、家具和平台的格子上（原版没有记录物块是谁放的，" +
                 "这里是按材质表判断的，木板/灰砖/玻璃这类建材会被当成玩家建筑）。");
+
+            if (totals.BuiltWallsWorld > 0)
+            {
+                // Walls are invisible in the tile grid but very visible in the world: blowing the wall out
+                // from behind a house wrecks it without touching a single block.
+                notes.Add(
+                    $"墙体也一起保护：全世界有 {totals.BuiltWallsWorld} 格墙不属于世界生成（世界生成的墙在 WallID 里都叫 Unsafe，" +
+                    $"其余按玩家自建算，含 1 格缓冲）。落在爆破范围内的玩家墙 {totals.BuiltWallsInBlast} 格。");
+            }
         }
 
         if (totals.DigTiles == 0 && blocked == 0)
@@ -810,6 +822,23 @@ public static class BlastPlanner
                     totals.PlayerBlocksInBlast += playerBlocks;
                 }
 
+                // Walls are counted separately from the dilated protection map, so the number reported is
+                // the real count of somebody's wall tiles inside the blast rather than a buffer estimate.
+                foreach (int offset in blastOffsets)
+                {
+                    int wx = bestX + OffsetX(offset);
+                    int wy = bestY + OffsetY(offset);
+                    if ((uint)wx >= (uint)width || (uint)wy >= (uint)height)
+                    {
+                        continue;
+                    }
+
+                    if (tiles.HasBuiltWallAt((wy * width) + wx))
+                    {
+                        totals.BuiltWallsInBlast++;
+                    }
+                }
+
                 foreach (int offset in blastOffsets)
                 {
                     int nx = bestX + OffsetX(offset);
@@ -1000,11 +1029,19 @@ public static class BlastPlanner
     /// 2 a structure (chest, door, furniture, platform, altar). Read once per plan because the charge
     /// search looks at the same tiles over and over.
     /// </summary>
-    private static byte[] BuildCollateralMap(TileGrid tiles)
+    private static byte[] BuildCollateralMap(TileGrid tiles, int buffer)
     {
         byte[] map = new byte[tiles.Count];
         for (int index = 0; index < map.Length; index++)
         {
+            // A wall somebody built is damage on its own, even when the tile in front of it is bare rock:
+            // blowing a hole in a house wall is how you ruin a build without touching a single block.
+            if (tiles.HasBuiltWallAt(index))
+            {
+                map[index] = 2;
+                continue;
+            }
+
             if (!tiles.ActiveAt(index))
             {
                 continue;
@@ -1021,7 +1058,56 @@ public static class BlastPlanner
             }
         }
 
-        return map;
+        if (buffer <= 0)
+        {
+            return map;
+        }
+
+        // Grow the protected area by a margin, but only around walls and blocks a player placed. Padding
+        // every frame-important tile sounded safer and was not: trees and cave decor are frame-important
+        // too, so a one tile margin turned a 78 tile dig list into 28,063 tiles and 463 minutes of
+        // swinging, which is not a plan anybody would run. Walls and built blocks are where clipping the
+        // neighbour actually matters -- a blast that only reaches the tile behind a wall still opens it.
+        byte[] grown = (byte[])map.Clone();
+        int width = tiles.Width;
+        for (int y = 0; y < tiles.Height; y++)
+        {
+            for (int x = 0; x < width; x++)
+            {
+                int index = (y * width) + x;
+                byte value = map[index];
+                if (value == 0 || (value == 2 && !tiles.HasBuiltWallAt(index)))
+                {
+                    continue;
+                }
+
+                for (int dy = -buffer; dy <= buffer; dy++)
+                {
+                    int ny = y + dy;
+                    if (ny < 0 || ny >= tiles.Height)
+                    {
+                        continue;
+                    }
+
+                    for (int dx = -buffer; dx <= buffer; dx++)
+                    {
+                        int nx = x + dx;
+                        if (nx < 0 || nx >= width)
+                        {
+                            continue;
+                        }
+
+                        int neighbour = (ny * width) + nx;
+                        if (grown[neighbour] < value)
+                        {
+                            grown[neighbour] = value;
+                        }
+                    }
+                }
+            }
+        }
+
+        return grown;
     }
 
     /// <summary>Records a fence tile the pickaxe has to take out, whatever the reason.</summary>
@@ -1068,6 +1154,10 @@ public static class BlastPlanner
         public int ProtectedInBlast { get; set; }
 
         public int PlayerBlocksInBlast { get; set; }
+
+        public int BuiltWallsInBlast { get; set; }
+
+        public int BuiltWallsWorld { get; set; }
 
         public List<DigOrder> Digs { get; } = [];
     }

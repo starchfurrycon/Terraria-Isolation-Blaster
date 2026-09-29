@@ -16,6 +16,7 @@ internal sealed class FakeBridge : IGameBridge
 
     private readonly bool[] solid;
     private readonly ushort[] types;
+    private readonly byte[] liquids;
     private readonly List<double[]> projectiles = [];
     private readonly List<string> logs = [];
 
@@ -31,6 +32,7 @@ internal sealed class FakeBridge : IGameBridge
         TileHeight = height;
         solid = new bool[width * height];
         types = new ushort[width * height];
+        liquids = new byte[width * height];
         for (int y = FloorY; y < height; y++)
         {
             for (int x = 0; x < width; x++)
@@ -107,7 +109,41 @@ internal sealed class FakeBridge : IGameBridge
 
     public int TileType(int x, int y) => IsSolid(x, y) ? types[(y * TileWidth) + x] : 0;
 
-    public int LiquidKind(int x, int y) => 0;
+    public int LiquidKind(int x, int y)
+    {
+        if (x < 0 || y < 0 || x >= TileWidth || y >= TileHeight)
+        {
+            return 0;
+        }
+
+        return liquids[(y * TileWidth) + x];
+    }
+
+    /// <summary>Fills a region with liquid: 1 water, 2 lava, 3 honey. Used by the routing tests.</summary>
+    public void FillLiquid(int minX, int minY, int maxX, int maxY, byte kind)
+    {
+        for (int y = Math.Max(0, minY); y <= Math.Min(TileHeight - 1, maxY); y++)
+        {
+            for (int x = Math.Max(0, minX); x <= Math.Min(TileWidth - 1, maxX); x++)
+            {
+                liquids[(y * TileWidth) + x] = kind;
+            }
+        }
+    }
+
+    /// <summary>Places solid tiles of a given type, so tests can build unbreakable rock.</summary>
+    public void FillType(int minX, int minY, int maxX, int maxY, ushort type)
+    {
+        for (int y = Math.Max(0, minY); y <= Math.Min(TileHeight - 1, maxY); y++)
+        {
+            for (int x = Math.Max(0, minX); x <= Math.Min(TileWidth - 1, maxX); x++)
+            {
+                int index = (y * TileWidth) + x;
+                solid[index] = true;
+                types[index] = type;
+            }
+        }
+    }
 
     public bool IsGravestone(int x, int y) => tombstones.Contains((y * TileWidth) + x);
 
@@ -138,6 +174,12 @@ internal sealed class FakeBridge : IGameBridge
 
         int index = (y * TileWidth) + x;
         bool wasGravestone = tombstones.Remove(index);
+        if (solid[index] && BestPickPower < TilePathfinder.RequiredPickPower(types[index]))
+        {
+            // Unbreakable with this pickaxe: the real game would just make the swing do nothing.
+            return;
+        }
+
         if (!solid[index])
         {
             if (wasGravestone)
@@ -150,6 +192,7 @@ internal sealed class FakeBridge : IGameBridge
 
         solid[index] = false;
         types[index] = 0;
+        DugTiles.Add((x, y));
         DigCount++;
     }
 
@@ -181,6 +224,9 @@ internal sealed class FakeBridge : IGameBridge
     }
 
     /// <summary>Fills solid tiles, used to build walls and pockets around a charge.</summary>
+    /// <summary>Every tile the executor actually removed, so a test can point at what it chewed.</summary>
+    public readonly List<(int X, int Y)> DugTiles = [];
+
     public void FillSolid(int minX, int minY, int maxX, int maxY)
     {
         for (int y = Math.Max(0, minY); y <= Math.Min(TileHeight - 1, maxY); y++)

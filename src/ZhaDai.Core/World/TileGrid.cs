@@ -180,6 +180,45 @@ public sealed class TileGrid
     }
 
     /// <summary>Clears a cell to empty air, which is what blasting it leaves behind.</summary>
+    /// <summary>
+    /// Walls that are not worldgen's own, keyed by tile index. Stored as a sparse map instead of one
+    /// array per tile: a large world has twenty million tiles and perhaps a few thousand walls anybody
+    /// built, so the useful set is tiny and the array would be forty megabytes of zeroes.
+    /// </summary>
+    private readonly Dictionary<int, ushort> builtWalls = [];
+
+    /// <summary>Records a wall, keeping only the ones that are not worldgen's own.</summary>
+    public void SetWall(int index, ushort wall)
+    {
+        if (TileCatalog.IsNaturalWall(wall))
+        {
+            return;
+        }
+
+        builtWalls[index] = wall;
+    }
+
+    /// <summary>The wall at a tile, or 0 when it is worldgen's own or absent.</summary>
+    public ushort BuiltWallAt(int index) => builtWalls.TryGetValue(index, out ushort wall) ? wall : (ushort)0;
+
+    /// <summary>True when somebody built a wall here, so blasting it would damage a building.</summary>
+    public bool HasBuiltWallAt(int index) => builtWalls.ContainsKey(index);
+
+    /// <summary>How many tiles carry a wall a player built. Reported so the numbers are auditable.</summary>
+    public int BuiltWallCount => builtWalls.Count;
+
+    /// <summary>Wall id to tile count, so a plan can show what it decided to protect and why.</summary>
+    public IReadOnlyDictionary<ushort, int> BuiltWallHistogram()
+    {
+        Dictionary<ushort, int> histogram = [];
+        foreach (ushort wall in builtWalls.Values)
+        {
+            histogram[wall] = histogram.TryGetValue(wall, out int count) ? count + 1 : 1;
+        }
+
+        return histogram;
+    }
+
     public void Clear(int index) => SetTile(index, 0, active: false, actuated: false, slope: 0, LiquidKind.None, 0);
 
     public int Count => TileCount;
