@@ -45,6 +45,17 @@ namespace ZhaDai.Runtime
         private static int loggedLines;
 
         private static bool enabled;
+
+        /// <summary>Key name from run.cfg that starts and stops the run, e.g. F8.</summary>
+        private static string hotkey = "F8";
+
+        private static bool hostKeyDownLastFrame;
+
+        /// <summary>True once run.cfg has supplied a hotkey; from then on the key owns the on/off switch.</summary>
+        private static bool hotkeyConfigured;
+
+        /// <summary>The config's own enabled= is applied once, so it cannot fight the hotkey every second.</summary>
+        private static bool configEnabledApplied;
         private static bool allowExplosives;
         private static int maxDeaths = 30;
         private static double hostileDistance = 14d;
@@ -72,6 +83,17 @@ namespace ZhaDai.Runtime
                     }
 
                     bridge.Refresh();
+
+                    // The hotkey is what actually starts a run when the player is driving: the config only
+                    // loads the plan, and a key press in game flips the switch. Toggling with one key keeps
+                    // the player in control: press again and the executor stops where it stands.
+                    bool hotkeyDown = HotkeyDown();
+                    if (hotkeyDown && !hostKeyDownLastFrame)
+                    {
+                        ToggleByHotkey();
+                    }
+
+                    hostKeyDownLastFrame = hotkeyDown;
 
                     if (bridge.Tick - lastPoll >= PollIntervalFrames)
                     {
@@ -108,6 +130,72 @@ namespace ZhaDai.Runtime
                     bridge.AdvanceFrame();
                 }
             }
+        }
+
+        /// <summary>
+        /// Reads whether the configured key is down right now. Terraria publishes the raw keyboard state in
+        /// Main.keyState (Main.cs:973), and FocusHelper only fills it while the game window has focus, so an
+        /// unfocused window simply never reports a press -- which is the behaviour we want.
+        /// </summary>
+        private static bool HotkeyDown()
+        {
+            if (reflection == null || reflection.MainKeyState == null)
+            {
+                return false;
+            }
+
+            object state = reflection.MainKeyState.GetValue(null);
+            if (state == null || reflection.KeyboardStatePressedKeys == null)
+            {
+                return false;
+            }
+
+            object[] pressed = reflection.KeyboardStatePressedKeys.Invoke(state, null) as object[];
+            if (pressed == null)
+            {
+                return false;
+            }
+
+            for (int i = 0; i < pressed.Length; i++)
+            {
+                if (pressed[i] != null &&
+                    string.Equals(pressed[i].ToString(), hotkey, StringComparison.OrdinalIgnoreCase))
+                {
+                    return true;
+                }
+            }
+
+            return false;
+        }
+
+        /// <summary>One key flips the run on and off, so the player keeps the switch in game.</summary>
+        private static void ToggleByHotkey()
+        {
+            // Read the config once here so a key press works even if it lands before the first poll: the
+            // plan has to be loaded before the executor can be built.
+            configEnabledApplied = true;
+            Poll();
+
+            if (enabled)
+            {
+                enabled = false;
+                Log("按下 " + hotkey + "：停止接管。");
+                FlushStatus();
+                FlushLog();
+                return;
+            }
+
+            if (plan == null)
+            {
+                Log("按下 " + hotkey + "：还没有可用的施工文件，先在 run.cfg 里写 plan=...。");
+                FlushLog();
+                return;
+            }
+
+            enabled = true;
+            Log("按下 " + hotkey + "：开始接管，共 " + plan.Charges.Count + " 发雷管。");
+            FlushStatus();
+            FlushLog();
         }
 
         private static void Initialise()
@@ -213,13 +301,36 @@ namespace ZhaDai.Runtime
                 switch (key)
                 {
                     case "enabled":
-                        enabled = value == "1" || value.Equals("true", StringComparison.OrdinalIgnoreCase);
+                        bool wanted = value == "1" || value.Equals("true", StringComparison.OrdinalIgnoreCase);
+                        if (hotkeyConfigured)
+                        {
+                            // With a hotkey in play the file only gets to say it once; otherwise the
+                            // per-second re-read would switch the run straight back off after a key press.
+                            if (!configEnabledApplied)
+                            {
+                                enabled = wanted;
+                                configEnabledApplied = true;
+                            }
+                        }
+                        else
+                        {
+                            enabled = wanted;
+                        }
+
                         break;
                     case "plan":
                         OpenPlan(value);
                         break;
                     case "allowexplosives":
                         allowExplosives = value == "1";
+                        break;
+                    case "hotkey":
+                        if (!string.IsNullOrWhiteSpace(value))
+                        {
+                            hotkey = value.Trim().ToUpperInvariant();
+                            hotkeyConfigured = true;
+                        }
+
                         break;
                     case "maxdeaths":
                         maxDeaths = ParseInt(value, maxDeaths);

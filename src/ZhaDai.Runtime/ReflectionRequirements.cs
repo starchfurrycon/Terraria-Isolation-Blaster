@@ -63,7 +63,8 @@ namespace ZhaDai.Runtime
             Field("Terraria.Main", "mouseX", false, "瞄准用的鼠标 X"),
             Field("Terraria.Main", "mouseY", false, "瞄准用的鼠标 Y"),
             Field("Terraria.Main", "tileSolid", true, "哪些物块是实心的"),
-            Field("Terraria.Main", "tileSolidTop", false, "平台这类可以从下方穿过、上面能站的物块"),
+            Field("Terraria.Main", "keyState", false, "按键状态（按键接管用；窗口失焦时游戏自己会清空它）"),
+        Field("Terraria.Main", "tileSolidTop", false, "平台这类可以从下方穿过、上面能站的物块"),
             Field("Terraria.Main", "tileNoFail", false, "不可破坏的物块（地牢砖通关前）"),
             Property("Terraria.Main", "GameUpdateCount", false, "逻辑帧计数，用于热键节流"),
 

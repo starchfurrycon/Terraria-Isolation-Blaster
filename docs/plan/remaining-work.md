@@ -151,3 +151,24 @@
   第一次跑证实注入后的 Terraria.exe 能正常启动到主界面（窗口响应、1.2GB 内存、哈希 275D…），但插件只在
   「已进世界」的钩子（Main.UpdateWorld_Players / Player.Update）里初始化，所以停在主菜单时没有 runtime.log。
   用户决定自己做实测，脚本留给用户/后续用。
+
+## 第 4 轮（续）：按键接管 + 测试副本
+
+- 用户要求：不要自动进世界，改成进世界后**按键触发**接管；死亡后继续。
+- 运行时：`run.cfg` 新增 `hotkey=F8`。按键读 `Main.keyState`（Main.cs:973；游戏只在窗口有焦点时填充，
+  Main.cs:18607），经 `KeyboardState.GetPressedKeys()` 反射读键名，不引 XNA 编译期引用。边沿检测放在
+  Host.Frame（A1 钩子，进世界后每帧）。带 hotkey 时 `enabled=` 只在第一遍生效、按下键后彻底交给按键，
+  否则每秒重读配置会把刚开的接管关掉；按键时先 `Poll()` 一次，保证计划已载入。
+- 反射成员：`Terraria.Main.keyState` 加进核对表，对真实 exe 核对 61 项、必需缺失 0。
+- 死亡续跑已确认：`HandleDeath` 记死亡 -> `AwaitRespawn` -> 复活后回到当前这一发，超过 `maxdeaths` 才停。
+- `tools/make-test-copy.ps1`：游戏本体（792MB robocopy）+ 存档（118MB）双副本，插件只装副本；
+  生成 `start-test.cmd`（cd 到副本目录再启动）与 `steam_appid.txt`（否则副本一闪而过，实测过）、
+  `plan.zplan`（整图 2177 发）与 `plan-quick.zplan`（40 发小样本）、`run.cfg`（hotkey=F8, maxdeaths=50）、
+  `README-测试.md`。写入前有 Assert，绝不写用户既有存档。
+- 实测：副本 exe 能正常启动到主界面（1184MB、窗口响应、日志 `Setting breakpad minidump AppID = 105600`）；
+  插件只在进世界后初始化，所以主菜单没有 runtime.log —— 这也是没有自动进世界时的预期行为。
+- 注意：用户当前自己那个实例跑的是**原版 exe**（未注入，我已还原），带 `-savedirectory D:\zhadai-test\save`；
+  要测按键接管必须换成启动副本的 `start-test.cmd`。
+
+下一步（还没做）：摆药贪心从「局部窗口」换成「整段最优」以继续压雷管数；感染侧留活口要先理顺藤蔓
+`belowWillClear` 的假设。

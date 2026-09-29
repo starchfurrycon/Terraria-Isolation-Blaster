@@ -77,6 +77,29 @@ dotnet run --project src/ZhaDai.Cli -- arm "存档.wld"
 
 判据里的两张表（68 项「一镐就没」的 `tileNoFail`、398 项 `tileFrameImportant` 结构物）是从反编译源码里**生成**的，不是手抄的。感染物块（草/荆棘/藤蔓）即使属于结构物表也会被排除，因为它们是传播源本身，必须清掉。
 
+## 进游戏按键接管（测试用）
+
+`tools/make-test-copy.ps1` 会造一份**测试副本**：游戏本体复制一份、插件只装进副本、存档也是副本，进世界后按键接管。
+
+```
+pwsh -File tools/make-test-copy.ps1              # 默认 D:\zhadai-test，世界 草剑挥打
+pwsh -File tools/make-test-copy.ps1 -SkipGameCopy  # 只更新存档/插件/计划
+```
+
+产物：
+
+- `D:\zhadai-test\game`（副本游戏，已注入插件）、`D:\zhadai-test\save`（副本存档）
+- `start-test.cmd`：双击启动。**工作目录必须是副本目录**，否则副本一闪而过（脚本已处理）
+- `game\ZhaDai\run.cfg`：`plan=plan-quick.zplan`（40 发小样本）、`hotkey=F8`、`maxdeaths=50`
+- `game\ZhaDai\plan.zplan`：整图（2,177 发）；想跑整图把 run.cfg 里的 plan 改一下，插件每秒重读
+
+`run.cfg` 现在多两个键：`hotkey=F8`（进世界后按一下开始、再按一下停止）与原有的 `plan=`/`enabled=`/
+`allowexplosives=`/`maxdeaths=`/`hostiledistance=`。带 `hotkey=` 时 `enabled=` 只在第一遍读到时生效，
+之后由按键说话（否则每秒重读配置会把刚开的接管又关掉）。
+
+按键状态来自 `Main.keyState`（`Terraria/Main.cs:973`），而游戏只在窗口有焦点时才填充它
+（`Main.cs:18607`），所以失焦时不会误触发。死亡处理：记一次死亡、报位置、等复活、回到当前这一发继续，
+超过 `maxdeaths` 才停（`BlastExecutor.HandleDeath`）。
 ## 藤蔓根：一块木头换掉一条竖井
 
 带草的前沿物块会长出藤蔓，藤蔓按 `WorldGen.CheckVines` 继承上方物块的种类，于是腐化草长出来的是腐化藤蔓（636），而 636 自己就是传染源——这是唯一能绕过封带的自然通路，所以老版本要么按 `--vine-reach` 往下挖一条 13 格竖井，要么不保险。

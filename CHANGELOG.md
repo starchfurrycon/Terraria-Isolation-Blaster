@@ -2,6 +2,15 @@
 
 ## 0.1.2-alpha
 
+**测试副本与按键接管**
+
+- 	ools/make-test-copy.ps1：游戏本体 + 存档双副本，插件只装在副本里；start-test.cmd 双击即玩。
+- 运行时新增按键接管：un.cfg 里 hotkey=F8，进世界后按一下开始、再按一下停止；按键读
+  Main.keyState（失焦时游戏自己清空它，不会误触发）。带 hotkey 时 enabled= 只生效一次，
+  不跟按键抢开关。
+- 死亡后自动继续：记死亡、报位置、等复活、回到当前这一发（HandleDeath -> AwaitRespawn），
+  超过 maxdeaths 才停下等人处理。
+
 寻路、把玩家建筑保护到墙，以及用一块木头顶掉一条藤蔓竖井。
 
 **A\* 寻路（执行器）**

@@ -120,6 +120,12 @@ namespace ZhaDai.Runtime
         /// <summary>Item.createTile: the tile an item places, 0 for everything that is not a block.</summary>
         public FieldInfo ItemCreateTile { get; private set; }
 
+        /// <summary>Main.keyState: the raw keyboard state, filled only while the window has focus.</summary>
+        public FieldInfo MainKeyState { get; private set; }
+
+        /// <summary>KeyboardState.GetPressedKeys: read through the boxed struct, so no XNA reference is needed.</summary>
+        public MethodInfo KeyboardStatePressedKeys { get; private set; }
+
         /// <summary>WorldGen.PlaceTile: the placement call worldgen itself uses.</summary>
         public MethodInfo WorldGenPlaceTile { get; private set; }
 
@@ -193,7 +199,11 @@ namespace ZhaDai.Runtime
             reflection.MainNpcs = reflection.OptionalField(reflection.Main, "npc", "没有 NPC 列表就不做敌怪规避。");
             reflection.MainMyPlayer = reflection.OptionalField(reflection.Main, "myPlayer", "没有本地玩家下标就固定用 0 号玩家。");
             reflection.MainTiles = reflection.RequireField(reflection.Main, "tile");
-            reflection.MainScreenPosition = reflection.OptionalField(reflection.Main, "screenPosition", "拿不到屏幕位置就无法瞄准。");
+            reflection.MainKeyState = reflection.OptionalField(reflection.Main, "keyState", "拿不到按键状态就用不了按键接管。");
+        reflection.KeyboardStatePressedKeys = reflection.MainKeyState == null
+            ? null
+            : reflection.MainKeyState.FieldType.GetMethod("GetPressedKeys", Type.EmptyTypes);
+        reflection.MainScreenPosition = reflection.OptionalField(reflection.Main, "screenPosition", "拿不到屏幕位置就无法瞄准。");
             reflection.MainMouseX = reflection.OptionalField(reflection.Main, "mouseX", "拿不到鼠标坐标就无法瞄准。");
             reflection.MainMouseY = reflection.OptionalField(reflection.Main, "mouseY", "拿不到鼠标坐标就无法瞄准。");
             reflection.MainTileSolid = reflection.RequireField(reflection.Main, "tileSolid");
