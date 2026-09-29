@@ -64,6 +64,12 @@ namespace ZhaDai.Automation
         /// <summary>True for a tombstone tile, which the executor digs after a death.</summary>
         bool IsGravestone(int x, int y);
 
+        /// <summary>
+        /// Wall id behind the tile, 0 for none. The executor asks because a built wall is damage on its own:
+        /// a blast that only reaches the tile in front of a house wall still opens the wall.
+        /// </summary>
+        int TileWall(int x, int y);
+
         /// <summary>Tile id of the Dynamite item stack, or -1 when the player has none.</summary>
         int FindDynamiteSlot();
 
@@ -85,6 +91,12 @@ namespace ZhaDai.Automation
 
         /// <summary>Mines one tile, used for tombstones and for digging through on the way.</summary>
         void DigTile(int x, int y);
+
+        /// <summary>
+        /// Stops holding the pickaxe swing. Called when a dig finishes or is given up so the character is not
+        /// left swinging at nothing.
+        /// </summary>
+        void StopDigging();
 
         /// <summary>
         /// Places one block of the given item into an empty tile, used for plugging vine anchors. Returns
@@ -112,6 +124,12 @@ namespace ZhaDai.Automation
         HostileTooClose,
         AboutToDrown,
         ManualStop,
+
+        /// <summary>The blast would reach something the player built; the charge was left alone.</summary>
+        StructuresInBlast,
+
+        /// <summary>No way to reach the spot without cutting through the player's ground or buildings.</summary>
+        NoUndamagingRoute,
 
         /// <summary>The player is not carrying what the plan needs; nothing was fired.</summary>
         NotEnoughSupplies,

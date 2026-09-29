@@ -438,6 +438,7 @@ namespace ZhaDai.Runtime
                     // overwrite them. The input triggers are recomputed from the keyboard every frame anyway,
                     // but a stop should visibly stop, not coast for a frame.
                     bridge.SetMovement(0, 0, false);
+            bridge.StopDigging();
 
                     Log("已停止接管，游戏交还给你。");
                     FlushStatus();
@@ -538,7 +539,7 @@ namespace ZhaDai.Runtime
                     lines.Add("routeRestarts=" + status.RouteRestarts.ToString(CultureInfo.InvariantCulture));
                     lines.Add("routeDigs=" + status.RouteDigs.ToString(CultureInfo.InvariantCulture));
             lines.Add("jumps=" + status.Jumps.ToString(CultureInfo.InvariantCulture));
-            lines.Add("walk=" + status.WalkNote);
+            lines.Add("escapes=" + status.EscapeDigs.ToString(CultureInfo.InvariantCulture) + " walk=" + status.WalkNote);
                     lines.Add("routeNote=" + status.LastRouteNote);
                     lines.Add("digsDone=" + status.DigsDone.ToString(CultureInfo.InvariantCulture) + "/" +
                               status.DigsSkipped.ToString(CultureInfo.InvariantCulture));

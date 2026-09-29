@@ -32,6 +32,12 @@ namespace ZhaDai.Automation
 
         public bool HasExplosives { get; set; }
 
+        /// <summary>
+        /// The plan flagged this charge's blast as reaching furniture, a container, a door or a player built
+        /// wall. Decided by the planner, which is the side that knows what a structure looks like.
+        /// </summary>
+        public bool HasProtected { get; set; }
+
         public override string ToString()
         {
             return string.Format(
@@ -294,6 +300,7 @@ namespace ZhaDai.Automation
                         charge.HasTrap = (hazards & 4) != 0;
                         charge.HasGravestone = (hazards & 8) != 0;
                         charge.HasExplosives = (hazards & 16) != 0;
+                        charge.HasProtected = (hazards & 32) != 0;
                         break;
                 }
             }

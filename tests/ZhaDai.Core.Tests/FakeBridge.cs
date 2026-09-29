@@ -213,27 +213,64 @@ internal sealed class FakeBridge : IGameBridge
 
         int index = (y * TileWidth) + x;
         bool wasGravestone = tombstones.Remove(index);
-        if (solid[index] && BestPickPower < TilePathfinder.RequiredPickPower(types[index]))
+        DigCount++;
+        if (!solid[index])
+        {
+            return;
+        }
+
+        if (BestPickPower < TilePathfinder.RequiredPickPower(types[index]))
         {
             // Unbreakable with this pickaxe: the real game would just make the swing do nothing.
             return;
         }
 
-        if (!solid[index])
+        // A tile needs more than one swing when the pickaxe is weaker than the tile's hardness. The real game
+        // swings at the pickaxe's own use time; the executor only holds the button, so this is what makes the
+        // difference between "mining" and "a frame operation that deletes terrain" visible in a test.
+        int swings = Math.Max(1, TilePathfinder.RequiredPickPower(types[index]) / 25);
+        swingsByTile.TryGetValue(index, out int already);
+        already++;
+        if (already < swings)
         {
-            if (wasGravestone)
-            {
-                DigCount++;
-            }
-
+            swingsByTile[index] = already;
             return;
         }
 
+        swingsByTile.Remove(index);
         solid[index] = false;
         types[index] = 0;
         DugTiles.Add((x, y));
-        DigCount++;
     }
+
+    public void StopDigging()
+    {
+        Digging = false;
+    }
+
+    /// <summary>True between a DigTile call and StopDigging, so a test can see the swing being held.</summary>
+    public bool Digging { get; private set; }
+
+    /// <summary>Swings spent per tile, for the multi-hit hardness above.</summary>
+    private readonly Dictionary<int, int> swingsByTile = [];
+
+    public int TileWall(int x, int y)
+    {
+        if (x < 0 || y < 0 || x >= TileWidth || y >= TileHeight)
+        {
+            return 0;
+        }
+
+        return walls.TryGetValue((y * TileWidth) + x, out int wall) ? wall : 0;
+    }
+
+    /// <summary>Puts a wall behind a tile, i.e. marks it as part of somebody's building.</summary>
+    public void SetWall(int x, int y, int wallId)
+    {
+        walls[(y * TileWidth) + x] = wallId;
+    }
+
+    private readonly Dictionary<int, int> walls = [];
 
     public void SetMovement(int dx, int dy, bool jump)
     {

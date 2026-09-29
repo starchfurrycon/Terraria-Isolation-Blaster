@@ -23,6 +23,7 @@ internal static class ExecutorTests
         DrowningSurfaces(check);
         RetreatsThroughRock(check);
         FenceDigs(check);
+        RespectsTheWorld(check);
         RemovalClassification(check);
         ExecutionFileRoundTrip(check);
     }
@@ -359,6 +360,90 @@ internal static class ExecutorTests
         {
             Console.WriteLine("  日志 " + line);
         }
+    }
+
+    /// <summary>
+    /// The three things the second real-machine report was about: mining that behaves like mining, a walk
+    /// that does not remodel the world, and getting out of a pocket instead of standing in it for ever.
+    /// </summary>
+    private static void RespectsTheWorld(Action<bool, string> check)
+    {
+        // 1. A charge the plan flagged as reaching a structure is left alone. The plan moves charges away from
+        //    builds, so this only fires when the world changed after planning -- which is exactly the case the
+        //    report describes.
+        ExecutionPlan protectedPlan = MakePlan(1, standOffset: 10);
+        protectedPlan.Charges[0].HasProtected = true;
+        FakeBridge protectedWorld = new();
+        BlastExecutor protectedRun = new(protectedPlan, new ExecutorOptions());
+        Drive(protectedRun, protectedWorld, 3000);
+        check(
+            protectedRun.Status.LastSkip == SkipReason.StructuresInBlast && protectedRun.Status.Fired == 0,
+            $"爆破范围里有玩家结构的那一发不炸（跳过原因 {protectedRun.Status.LastSkip}，放了 {protectedRun.Status.Fired} 发）");
+
+        ExecutionPlan allowedPlan = MakePlan(1, standOffset: 10);
+        allowedPlan.Charges[0].HasProtected = true;
+        BlastExecutor allowedRun = new(allowedPlan, new ExecutorOptions { ProtectStructures = false });
+        Drive(allowedRun, new FakeBridge(), 3000);
+        check(
+            allowedRun.Status.Fired == 1,
+            $"显式关掉保护后照常施工（放了 {allowedRun.Status.Fired} 发）");
+
+        // 2. A way on that would mean cutting through somebody's wall is refused rather than mined. Before this,
+        //    the walker happily dug through the wall and the trench showed up in the player's base. The stand
+        //    point sits behind a tall wall, so the only route in is through it.
+        ExecutionPlan walledPlan = MakePlan(1, standOffset: 10);
+        FakeBridge walledWorld = new();
+        walledWorld.FillSolid(49, 10, 49, 20);
+        for (int y = 10; y <= 20; y++)
+        {
+            walledWorld.SetWall(49, y, 4);
+        }
+
+        ExecutorOptions walledOptions = new();
+        BlastExecutor walledRun = new(walledPlan, walledOptions);
+        Drive(walledRun, walledWorld, 8000);
+        check(
+            walledRun.Status.RouteDigs == 0 && walledRun.Status.EscapeDigs == 0 && walledRun.Status.Fired == 0 &&
+            walledRun.Status.LastSkip == SkipReason.NoUndamagingRoute,
+            $"只有挖穿自建墙才过得去时不挖，改为一发不打并说明（路线挖 {walledRun.Status.RouteDigs}，脱困挖 {walledRun.Status.EscapeDigs}，放了 {walledRun.Status.Fired} 发，原因 {walledRun.Status.LastSkip}）");
+        check(
+            walledWorld.DugTiles.Count == 0,
+            $"自建墙一格都没少（挖了 {walledWorld.DugTiles.Count} 格）");
+        check(
+            System.Linq.Enumerable.Any(walledWorld.Logs, m => m.Contains("困住")) ||
+            System.Linq.Enumerable.Any(walledWorld.Logs, m => m.Contains("手动")),
+            $"日志里写清了为什么放弃（{string.Join(" | ", walledWorld.Logs)}）");
+
+        // 3. Mining takes more than one tick, because the game swings at the pickaxe's own use time. The old
+        //    frame operation deleted a tile per frame, which is what "frame operation" felt like in game.
+        ExecutionPlan slowPlan = MakePlan(1, standOffset: 10);
+        slowPlan.PickPower = 100;
+        slowPlan.Digs.Add(new ZhaDai.Automation.DigOrder { X = 45, Y = 19, Type = 107, Hits = 3, Reason = "blastimmune" });
+        FakeBridge slowWorld = new() { BestPickPower = 100 };
+        slowWorld.FillSolid(45, 19, 45, 19);
+        BlastExecutor slowRun = new(slowPlan, new ExecutorOptions());
+        Drive(slowRun, slowWorld, 40000);
+        check(
+            slowWorld.DigCount > 1 && !slowWorld.IsSolid(45, 19),
+            $"挖一格要挥好几镐，而不是一帧删掉（挥了 {slowWorld.DigCount} 镐）");
+
+        // 4. Trapped: the same tall wall, but plain rock, so the emergency dig is allowed and the walker mines
+        //    one tile through it instead of standing there. Standing there is what the report saw.
+        ExecutionPlan pocketPlan = MakePlan(1, standOffset: 10);
+        FakeBridge pocketWorld = new();
+        pocketWorld.FillSolid(49, 10, 49, 20);
+        ExecutorOptions pocketOptions = new();
+        BlastExecutor pocketRun = new(pocketPlan, pocketOptions);
+        int pocketTicks = Drive(pocketRun, pocketWorld, 20000);
+        check(
+            pocketRun.Status.State == ExecutorState.Finished && pocketRun.Status.Fired == 1,
+            $"被普通岩石关住时自己挖出来把活干完（状态 {pocketRun.Status.State}，放了 {pocketRun.Status.Fired} 发，{pocketTicks} tick，挖了 {pocketWorld.DugTiles.Count} 格）");
+        check(
+            pocketRun.Status.EscapeDigs <= pocketOptions.EscapeDigTiles,
+            $"脱困那几步是有限的（脱困挖 {pocketRun.Status.EscapeDigs} 格，上限 {pocketOptions.EscapeDigTiles}）");
+        check(
+            walledRun.Status.EscapeDigs == 0 && pocketRun.Status.RouteDigs + pocketRun.Status.EscapeDigs > 0,
+            $"地面上的墙不挖、只挖头顶有岩层的路（路线挖 {pocketRun.Status.RouteDigs}，脱困挖 {pocketRun.Status.EscapeDigs}）");
     }
 
     private static ExecutionPlan MakePlan(int count, int standOffset)    {

@@ -102,6 +102,27 @@ namespace ZhaDai.Automation
 
         /// <summary>Give up on one plug after this many ticks so a single bad spot cannot stall the run.</summary>
         public int MaxTicksPerPlug { get; set; } = 900;
+
+        /// <summary>
+        /// Whether the walker may mine its way along a route. Off by default, and that is the point: the first
+        /// real-machine runs cut trenches through the player's flat ground and through walls to reach stand
+        /// points. The walker now goes around, and if there is no way around it leaves the charge alone and
+        /// says so. The plan's own dig list is unaffected -- those tiles are the fence.
+        /// </summary>
+        public bool WalkDig { get; set; } = true;
+
+        /// <summary>
+        /// Tiles the walker may still mine when it is genuinely trapped (a C shaped pocket it cannot jump out
+        /// of). Bounded so a bad spot cannot turn into a tunnel, and never through a built wall.
+        /// </summary>
+        public int EscapeDigTiles { get; set; } = 6;
+
+        /// <summary>
+        /// Skip charges whose blast would reach a structure. The plan already positions charges to avoid
+        /// furniture, containers and player built walls, so this only fires when the world changed since the
+        /// plan was computed -- exactly when a fresh building would otherwise be blown open.
+        /// </summary>
+        public bool ProtectStructures { get; set; } = true;
     }
 
     /// <summary>One state transition, with the tick and charge it happened on. Kept for the run report.</summary>
@@ -176,6 +197,9 @@ namespace ZhaDai.Automation
 
         /// <summary>Jumps started while walking. Small is good: one per obstacle, not one per frame.</summary>
         public int Jumps { get; internal set; }
+
+        /// <summary>Emergency swings spent getting out of a pocket. Should stay near zero.</summary>
+        public int EscapeDigs { get; internal set; }
 
         /// <summary>Times work was paused by a hazard (a hostile in the face, lava, deep water) instead of
         /// by missing supplies. A run that ends with a big number here is a run the world fought back on.</summary>
@@ -270,6 +294,58 @@ namespace ZhaDai.Automation
 
         /// <summary>Longest a single jump is held, in ticks. A vanilla full-height jump is far shorter.</summary>
         private const int JumpHoldTicks = 30;
+
+        /// <summary>Ticks without changing tile before the walker is considered trapped.</summary>
+        private const int StuckTicks = 90;
+
+        /// <summary>Deliberate escape attempts (a dig or a held jump) allowed per charge.</summary>
+        private const int EscapeEpisodes = 4;
+
+        /// <summary>Solid tiles above a tile before mining it counts as underground work.</summary>
+        private const int CoverTiles = 3;
+
+        private int progressX = int.MinValue;
+        private int progressY = int.MinValue;
+        private long progressTick;
+        private int escapeDigs;
+        private int escapeEpisodes;
+        private bool escaping;
+        private int escapeDigX = -1;
+        private int escapeDigY = -1;
+
+        /// <summary>
+        /// Whether the walker may mine this tile to get through. Only with rock above it: a tunnel under three
+        /// tiles of cover is invisible from the surface, while mining the top of the ground is exactly the
+        /// trench the first real-machine run cut across the player's flat fields. Built walls are never mined,
+        /// and the plan's own dig list does not come through here.
+        /// </summary>
+        private bool CanRouteDig(IGameBridge game, int x, int y)
+        {
+            return options.WalkDig && game.TileWall(x, y) == 0 && Covered(game, x, y);
+        }
+
+        /// <summary>Rock above the tile, so opening it up cannot be seen from the surface.</summary>
+        private static bool Covered(IGameBridge game, int x, int y)
+        {
+            for (int dy = 1; dy <= CoverTiles; dy++)
+            {
+                if (!game.IsSolid(x, y - dy))
+                {
+                    return false;
+                }
+            }
+
+            return true;
+        }
+
+        /// <summary>
+        /// Whether an emergency dig is allowed here: never through a wall somebody built, and only a handful of
+        /// tiles per charge so a trap cannot be answered with a tunnel.
+        /// </summary>
+        private bool CanDigAt(IGameBridge game, int x, int y)
+        {
+            return escapeDigs < options.EscapeDigTiles && game.TileWall(x, y) == 0;
+        }
 
         public BlastExecutor(ExecutionPlan plan, ExecutorOptions options)
         {
@@ -517,6 +593,7 @@ namespace ZhaDai.Automation
         {
             if (digIndex >= plan.Digs.Count)
             {
+                game.StopDigging();
                 status.State = ExecutorState.Idle;
                 AdvanceToNextCharge(game);
                 return;
@@ -537,6 +614,7 @@ namespace ZhaDai.Automation
 
             if (!game.IsSolid(dig.X, dig.Y))
             {
+                game.StopDigging();
                 status.DigsDone++;
                 digIndex++;
                 digTick = game.Tick;
@@ -545,6 +623,7 @@ namespace ZhaDai.Automation
 
             if (game.Tick - digTick > options.MaxTicksPerDig)
             {
+                game.StopDigging();
                 status.DigsSkipped++;
                 game.Log(string.Format(
                     CultureInfo.InvariantCulture,
@@ -579,6 +658,78 @@ namespace ZhaDai.Automation
             SetState(ExecutorState.DigFence, SkipReason.None, "挖 " + dig);
         }
 
+        /// <summary>
+        /// One deliberate move to get out of a spot the normal walker cannot leave: the tile in the direction
+        /// of the target, then the one above the head, then a full held jump in place. Returns false when every
+        /// option would mean cutting through somebody's wall or has already been spent, which is the moment to
+        /// leave the charge alone rather than remodel the base.
+        /// </summary>
+        private bool EscapeStep(IGameBridge game, int targetX, int targetY)
+        {
+            int px = (int)Math.Round(game.PlayerX);
+            int py = (int)Math.Round(game.PlayerY);
+            int dx = Math.Sign(targetX - px);
+
+            int[] candidateX;
+            int[] candidateY;
+            if (dx != 0)
+            {
+                // The whole body, not just the tile in front of the feet: a tunnel has to be tall enough to walk
+                // into. Digging only the foot level left the player standing behind a one tile window it could
+                // not fit through, which is how the first version of this stayed stuck.
+                candidateX = new[] { px + dx, px + dx, px + dx, px + dx, px, px };
+                candidateY = new[] { py, py - 1, py - 2, py + 1, py - 1, py - 2 };
+            }
+            else
+            {
+                // Target straight above or below: go up, one body length of it.
+                candidateX = new[] { px, px, px, px + 1, px - 1, px + 1 };
+                candidateY = new[] { py - 1, py - 2, py - 3, py - 1, py - 1, py - 2 };
+            }
+
+            for (int i = 0; i < candidateX.Length; i++)
+            {
+                int x = candidateX[i];
+                int y = candidateY[i];
+                if (!game.IsSolid(x, y))
+                {
+                    continue;
+                }
+
+                if (!CanDigAt(game, x, y))
+                {
+                    continue;
+                }
+
+                escapeDigs++;
+                escapeEpisodes++;
+                escaping = true;
+                escapeDigX = x;
+                escapeDigY = y;
+                status.EscapeDigs++;
+                game.DigTile(x, y);
+                game.SetMovement(0, 0, false);
+                status.WalkNote = "脱困挖 " + x + "," + y;
+                return true;
+            }
+
+            // Nothing diggable: a held jump is the other way out of a pocket, and it is the move the walker
+            // already knows how to do properly (full height, no mid-air re-press).
+            if (!jumpHeld && game.PlayerGrounded)
+            {
+                jumpHeld = true;
+                jumpStartTick = game.Tick;
+                canJump = false;
+                escapeEpisodes++;
+                game.SetMovement(0, 0, true);
+                status.WalkNote = "脱困跳";
+                return true;
+            }
+
+            status.WalkNote = "脱困无路";
+            return false;
+        }
+
         private void TickGoToStand(IGameBridge game)
         {
             ChargeOrder charge = Current;
@@ -594,7 +745,58 @@ namespace ZhaDai.Automation
             if (distance <= 1.5d)
             {
                 game.SetMovement(0, 0, false);
+                game.StopDigging();
                 SetState(ExecutorState.Arming, SkipReason.None, "到位，准备布雷管。");
+                return;
+            }
+
+            // Progress watchdog. A C shaped pocket, a one tile gap under an overhang, a spot where the only
+            // way on is through somebody's wall: the player stands there for ever while the walker keeps
+            // issuing the same instruction. Standing still for a second and a half means it is time to get
+            // out deliberately -- a bounded dig, a held jump -- or to leave the charge alone.
+            int px = (int)Math.Round(game.PlayerX);
+            int py = (int)Math.Round(game.PlayerY);
+            if (px != progressX || py != progressY)
+            {
+                progressX = px;
+                progressY = py;
+                progressTick = game.Tick;
+            }
+            else if (game.Tick - progressTick > StuckTicks)
+            {
+                // While an escape dig is in progress, keep the swing held and let it finish. The first version
+                // ran the escape every tick, which meant it went on digging the tunnel it had already opened:
+                // the tile was gone, the player could have walked, and the loop kept hacking at something else
+                // until the budget ran out and the charge was abandoned.
+                if (escaping)
+                {
+                    if (escapeDigX >= 0 && game.IsSolid(escapeDigX, escapeDigY))
+                    {
+                        game.DigTile(escapeDigX, escapeDigY);
+                        game.SetMovement(0, 0, false);
+                        return;
+                    }
+
+                    escaping = false;
+                    escapeDigX = -1;
+                    progressTick = game.Tick;
+                    return;
+                }
+
+                if (escapeEpisodes >= EscapeEpisodes || !EscapeStep(game, targetX, targetY))
+                {
+                    game.StopDigging();
+                    SkipCharge(
+                        game,
+                        SkipReason.NoUndamagingRoute,
+                        string.Format(
+                            CultureInfo.InvariantCulture,
+                            "到不了站位 ({0},{1})：被地形困住，而且出路要挖穿墙或你的地面，这一发留给你手动处理。",
+                            targetX,
+                            targetY));
+                    return;
+                }
+
                 return;
             }
 
@@ -634,6 +836,22 @@ namespace ZhaDai.Automation
             if (charge.HasExplosives && !options.AllowExplosives)
             {
                 SkipCharge(game, SkipReason.ExplosivesInBlast, "爆破范围内有炸弹桶/爆炸物，先手动清掉再炸。");
+                return;
+            }
+
+            if (charge.HasProtected && options.ProtectStructures)
+            {
+                // The plan already moved this charge away from anything built; reaching here means the world
+                // changed since (a fresh build, a chest moved in). Blowing a hole in somebody's house is not
+                // worth one charge, so it is left alone and named.
+                SkipCharge(
+                    game,
+                    SkipReason.StructuresInBlast,
+                    string.Format(
+                        CultureInfo.InvariantCulture,
+                        "这一发 ({0},{1}) 的爆破范围里有家具/容器/自建墙（计划生成后世界变了），不炸，留给你手动处理。",
+                        charge.X,
+                        charge.Y));
                 return;
             }
 
@@ -767,14 +985,15 @@ namespace ZhaDai.Automation
             int y;
             if (!FindGravestone(game, out x, out y))
             {
+                game.StopDigging();
                 SetState(ExecutorState.GoToStand, SkipReason.None, "墓碑清完了，继续施工。");
                 return;
             }
 
             if (Chebyshev(game.PlayerX, game.PlayerY, x, y) <= 4.5d)
             {
-                game.SetMovement(0, 0, false);
                 game.DigTile(x, y);
+                game.SetMovement(0, 0, false);
                 status.GravestonesDug++;
                 return;
             }
@@ -1147,13 +1366,19 @@ namespace ZhaDai.Automation
             int stepX = Math.Sign(waypointX - px);
             int stepY = Math.Sign(waypointY - py);
 
-            // The route is allowed to go through rock, so a solid waypoint is a mining target rather
-            // than an obstacle. Reaching for the next tile instead would leave the player stuck against
-            // a wall the route already decided to break.
+            // A solid waypoint on the route is either a mining target or a reason to give up, depending on
+            // whether the walker is allowed to mine a path at all. Reaching for the next tile instead would
+            // leave the player stuck against a wall the route already decided to break.
             if (game.IsSolid(waypointX, waypointY))
             {
                 if (Math.Max(Math.Abs(waypointX - px), Math.Abs(waypointY - py)) <= 1)
                 {
+                    if (!CanRouteDig(game, waypointX, waypointY))
+                    {
+                        status.WalkNote = "路点要挖但被禁挖 " + waypointX + "," + waypointY;
+                        return;
+                    }
+
                     game.DigTile(waypointX, waypointY);
                     status.RouteDigs++;
                     game.SetMovement(0, 0, false);
@@ -1321,9 +1546,16 @@ namespace ZhaDai.Automation
             int aheadY = (int)Math.Round(game.PlayerY);
             if (dx != 0 && game.IsSolid(aheadX, aheadY))
             {
-                game.DigTile(aheadX, aheadY);
-                game.SetMovement(0, 0, false);
-                status.WalkNote = "直线挖 " + aheadX + "," + aheadY + " 类型 " + game.TileType(aheadX, aheadY);
+                if (CanRouteDig(game, aheadX, aheadY))
+                {
+                    game.DigTile(aheadX, aheadY);
+                    game.SetMovement(0, 0, false);
+                    status.WalkNote = "直线挖 " + aheadX + "," + aheadY + " 类型 " + game.TileType(aheadX, aheadY);
+                }
+                else
+                {
+                    status.WalkNote = "直线要挖但被禁挖 " + aheadX + "," + aheadY;
+                }
                 return;
             }
 

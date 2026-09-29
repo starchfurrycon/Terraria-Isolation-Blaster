@@ -163,6 +163,9 @@ namespace ZhaDai.Runtime
 
         public FieldInfo TileType { get; private set; }
 
+        /// <summary>Wall id behind a tile, used to tell a build from worldgen.</summary>
+        public FieldInfo TileWall { get; private set; }
+
         public FieldInfo TileLiquid { get; private set; }
 
         public MethodInfo TileActive { get; private set; }
@@ -274,6 +277,7 @@ namespace ZhaDai.Runtime
             reflection.NpcCenter = reflection.OptionalProperty(reflection.Npc, "Center", "拿不到 NPC 位置就不做敌怪规避。");
 
             reflection.TileType = reflection.RequireField(reflection.Tile, "type");
+            reflection.TileWall = reflection.OptionalField(reflection.Tile, "wall", "拿不到墙 id 就无法区分玩家自建墙，保护判断会退化。");
             reflection.TileLiquid = reflection.RequireField(reflection.Tile, "liquid");
             reflection.TileActive = reflection.RequireMethod(reflection.Tile, "active", Type.EmptyTypes);
 

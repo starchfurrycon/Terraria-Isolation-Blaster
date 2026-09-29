@@ -31,11 +31,17 @@ namespace ZhaDai.Runtime
         private long frame;
         private bool keepUsingItem;
 
+        /// <summary>True while the executor is holding a pickaxe swing, so SetMovement does not release it.</summary>
+        private bool mining;
+
         /// <summary>How many times writing an input trigger failed, so the log says it once or twice, not per frame.</summary>
         private int inputProblems;
 
         /// <summary>Whether the one-off "first movement command" line has been written yet.</summary>
         private bool moveLogged;
+
+        /// <summary>Hotbar slot currently held, so switching to the pickaxe happens once, not every tick.</summary>
+        private int currentSlot = -1;
 
         internal TerrariaBridge(GameReflection reflection)
         {
@@ -305,6 +311,17 @@ namespace ZhaDai.Runtime
             return true;
         }
 
+        /// <summary>Wall id behind a tile, 0 when there is none or the field could not be resolved.</summary>
+        public int TileWall(int x, int y)
+        {
+            object tile = TileAt(x, y);
+            if (tile == null || reflection.TileWall == null)
+            {
+                return 0;
+            }
+
+            return Convert.ToInt32(reflection.TileWall.GetValue(tile));
+        }
         public int TileType(int x, int y)
         {
             object tile = TileAt(x, y);
@@ -543,6 +560,7 @@ namespace ZhaDai.Runtime
 
             reflection.SelectedIndex.SetValue(state, slot);
             reflection.PlayerSelectedItemState.SetValue(player, state);
+            currentSlot = slot;
         }
 
         /// <summary>
@@ -620,14 +638,102 @@ namespace ZhaDai.Runtime
             }
         }
 
+        /// <summary>
+        /// Swings the pickaxe at a tile the way a player does: put the pickaxe in hand, point at the tile, hold
+        /// the use button. The game then does the swinging, the animation, the reach check and the multi-hit
+        /// hardness. The first version called Player.PickTile directly every frame, which is a frame operation
+        /// rather than a swing: it ignored the pickaxe's use time, so it neither looked nor behaved like
+        /// mining, and it tore through terrain far faster than the plan's own time estimate.
+        /// </summary>
         public void DigTile(int x, int y)
         {
-            if (player == null || reflection.PlayerPickTile == null)
+            if (player == null)
             {
                 return;
             }
 
-            reflection.PlayerPickTile.Invoke(player, new object[] { x, y, PickPower, 1 });
+            int slot = FindPickaxeSlot();
+            if (slot >= 0 && slot != currentSlot)
+            {
+                SelectSlot(slot);
+                currentSlot = slot;
+            }
+
+            AimAt(x, y);
+            SetInput(reflection.InputMouseLeft, true);
+            mining = true;
+            keepUsingItem = true;
+        }
+
+        public void StopDigging()
+        {
+            mining = false;
+            SetInput(reflection.InputMouseLeft, false);
+            Set(reflection.PlayerControlUseItem, false);
+            keepUsingItem = false;
+        }
+
+        /// <summary>Slot holding the best pickaxe, or -1. Read from the same Item.pick the audit uses.</summary>
+        private int FindPickaxeSlot()
+        {
+            if (player == null || reflection.PlayerInventory == null || reflection.ItemPick == null)
+            {
+                return -1;
+            }
+
+            Array inventory = reflection.PlayerInventory.GetValue(player) as Array;
+            if (inventory == null)
+            {
+                return -1;
+            }
+
+            int best = -1;
+            int bestPower = 0;
+            for (int i = 0; i < inventory.Length; i++)
+            {
+                object item = inventory.GetValue(i);
+                if (item == null)
+                {
+                    continue;
+                }
+
+                object stack = reflection.ItemStack == null ? null : reflection.ItemStack.GetValue(item);
+                if (stack != null && Convert.ToInt32(stack) <= 0)
+                {
+                    continue;
+                }
+
+                int power = Convert.ToInt32(reflection.ItemPick.GetValue(item));
+                if (power > bestPower)
+                {
+                    bestPower = power;
+                    best = i;
+                }
+            }
+
+            return best;
+        }
+
+        /// <summary>Points the mouse at a tile, which is all the game needs to know what to mine.</summary>
+        private void AimAt(int tileX, int tileY)
+        {
+            if (reflection.MainScreenPosition == null || reflection.MainMouseX == null || reflection.MainMouseY == null)
+            {
+                return;
+            }
+
+            object screen = reflection.MainScreenPosition.GetValue(null);
+            if (screen == null)
+            {
+                return;
+            }
+
+            reflection.MainMouseX.SetValue(
+                null,
+                (int)Math.Round(((tileX * PixelsPerTile) + (PixelsPerTile / 2f)) - reflection.VectorX(screen)));
+            reflection.MainMouseY.SetValue(
+                null,
+                (int)Math.Round(((tileY * PixelsPerTile) + (PixelsPerTile / 2f)) - reflection.VectorY(screen)));
         }
 
         public void SetMovement(int dx, int dy, bool jump)
@@ -664,9 +770,12 @@ namespace ZhaDai.Runtime
             Set(reflection.PlayerControlJump, jump && dy <= 0);
 
             // The use button is held for exactly the frame the throw happens in; releasing it here
-            // stops the executor from emptying the whole stack at one spot.
-            if (!keepUsingItem)
+            // stops the executor from emptying the whole stack at one spot. A pickaxe swing is different:
+            // the executor keeps asking for it every tick until the tile is gone, so it must survive this
+            // call no matter which order the executor used.
+            if (!keepUsingItem && !mining)
             {
+                SetInput(reflection.InputMouseLeft, false);
                 Set(reflection.PlayerControlUseItem, false);
             }
 

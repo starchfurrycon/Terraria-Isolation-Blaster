@@ -169,6 +169,14 @@ public static class TileCatalog
     public static bool IsInfectionVector(ushort type) => InfectionVectorSet.Contains(type);
 
     /// <summary>
+    /// A wall somebody built rather than one the world generated, using the same rule the planner protects
+    /// blasts with: wood, brick, glass and planked walls count as a build, everything worldgen places (the
+    /// "Unsafe" families and the plain cave walls) does not. Vanilla never records who placed a wall, so
+    /// erring towards "it is a build" costs a few mined tiles and saves a house.
+    /// </summary>
+    public static bool IsPlayerBuiltWall(int wallId) => wallId > 0 && !NaturalWallSet.Contains((ushort)wallId);
+
+    /// <summary>
     /// Terrain that occurs naturally and is safe to blow up: convertible terrain plus the natural
     /// non-convertible materials.
     /// </summary>
