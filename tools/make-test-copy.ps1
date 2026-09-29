@@ -133,13 +133,34 @@ $fullPlan = Join-Path $runDir 'plan.zplan'
 & $dotnet $cli plan $copyWorld "--zplan=$fullPlan" | Select-String -Pattern '雷管：|封堵|镐子分担|复核' | ForEach-Object { Say "  $($_.Line)" }
 if ($LASTEXITCODE -ne 0) { throw "规划失败" }
 
-# 小样本：只留前 N 发雷管，去掉封堵和改挖，用来看动作对不对，不指望它真把图封住。
+# 小样本：只留 N 发雷管，去掉封堵和改挖，用来看动作对不对，不指望它真把图封住。
+# 按「离出生点近」挑，而不是按规划顺序挑：整图的第一发可能在两千格以外，真机上按了键要
+# 走十分钟才看到第一个动作，没法判断接管到底对不对。
 $lines = [System.IO.File]::ReadAllLines($fullPlan)
+$spawnX = 0; $spawnY = 0
+foreach ($line in $lines) {
+    if ($line -match '^spawn=(\d+)\s+(\d+)') { $spawnX = [int]$Matches[1]; $spawnY = [int]$Matches[2]; break }
+}
+
+$allCharges = New-Object System.Collections.Generic.List[string]
+foreach ($line in $lines) {
+    if ($line.StartsWith('#CHARGE')) { $allCharges.Add($line) }
+}
+
+$near = $allCharges | Sort-Object {
+    # #CHARGE <序号> <x> <y> sec=… stand=… retreat=… haz=…
+    if ($_ -match '^#CHARGE\s+\d+\s+(-?\d+)\s+(-?\d+)') {
+        [Math]::Max([Math]::Abs([int]$Matches[1] - $spawnX), [Math]::Abs([int]$Matches[2] - $spawnY))
+    } else { 999999 }
+} | Select-Object -First $QuickCharges
+
 $quick = New-Object System.Collections.Generic.List[string]
 $charges = 0
+$kept = New-Object 'System.Collections.Generic.HashSet[string]'
+foreach ($charge in $near) { [void]$kept.Add($charge); $charges++ }
 foreach ($line in $lines) {
     if ($line.StartsWith('#CHARGE')) {
-        if ($charges -lt $QuickCharges) { $quick.Add($line); $charges++ }
+        if ($kept.Contains($line)) { $quick.Add($line) }
         continue
     }
 

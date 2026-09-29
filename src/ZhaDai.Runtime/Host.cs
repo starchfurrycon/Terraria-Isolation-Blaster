@@ -285,6 +285,14 @@ namespace ZhaDai.Runtime
             }
 
             Log("反射自检通过。读取 " + Path.Combine("ZhaDai", "run.cfg") + "：带 hotkey= 就按键开始，否则等 enabled=1。");
+
+            // Say which movement channel is live. Writing the player's control fields looks like it works and
+            // silently does nothing (Player.Update copies the input layer over them), so this line is the
+            // difference between "the plugin is broken" and "the plugin cannot drive this build".
+            Log(reflection.InputTriggers != null && reflection.InputTriggersCurrent != null
+                ? "移动通道：输入层 PlayerInput.Triggers.Current（原版自己的走位逻辑）"
+                : "移动通道：只能写玩家控制字段（会被原版每帧覆盖，角色可能不动）");
+
             Poll();
         }
 
@@ -425,6 +433,12 @@ namespace ZhaDai.Runtime
                 {
                     executor.Stop();
                     executor = null;
+
+                    // Let go of the controls immediately instead of waiting for the next frame's input pass to
+                    // overwrite them. The input triggers are recomputed from the keyboard every frame anyway,
+                    // but a stop should visibly stop, not coast for a frame.
+                    bridge.SetMovement(0, 0, false);
+
                     Log("已停止接管，游戏交还给你。");
                     FlushStatus();
                 }

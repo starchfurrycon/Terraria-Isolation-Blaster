@@ -92,6 +92,28 @@ namespace ZhaDai.Runtime
 
         public FieldInfo PlayerControlUseItem { get; private set; }
 
+        // The input layer. Writing the player's control fields is not enough: Player.Update calls
+        // PlayerInput.Triggers.Current.CopyInto(this), which overwrites controlLeft/Right/Up/Down/Jump from
+        // the real input state on every frame. The first real-machine run showed exactly that -- the executor
+        // walked into the world, set the fields, and the character never moved. Driving the trigger set
+        // instead is how the game itself moves the player, so the movement looks native in every respect
+        // (momentum, slopes, auto-step) instead of being teleported by us.
+        public FieldInfo InputTriggers { get; private set; }
+
+        public FieldInfo InputTriggersCurrent { get; private set; }
+
+        public MemberInfo InputLeft { get; private set; }
+
+        public MemberInfo InputRight { get; private set; }
+
+        public MemberInfo InputUp { get; private set; }
+
+        public MemberInfo InputDown { get; private set; }
+
+        public MemberInfo InputJump { get; private set; }
+
+        public MemberInfo InputMouseLeft { get; private set; }
+
         public FieldInfo PlayerOwnedProjectileCounts { get; private set; }
 
         public FieldInfo PlayerInventory { get; private set; }
@@ -227,6 +249,7 @@ namespace ZhaDai.Runtime
             reflection.PlayerControlDown = reflection.RequireField(reflection.Player, "controlDown");
             reflection.PlayerControlJump = reflection.RequireField(reflection.Player, "controlJump");
             reflection.PlayerControlUseItem = reflection.RequireField(reflection.Player, "controlUseItem");
+            reflection.ResolveInputTriggers();
             reflection.PlayerOwnedProjectileCounts = reflection.OptionalField(reflection.Player, "ownedProjectileCounts", "拿不到自己的弹幕数就无法确认雷管到底丢没丢出去。");
             reflection.PlayerInventory = reflection.RequireField(reflection.Player, "inventory");
             reflection.PlayerSelectedItemState = reflection.OptionalField(reflection.Player, "selectedItemState", "拿不到选中格就无法换手。");
@@ -296,6 +319,59 @@ namespace ZhaDai.Runtime
         public float VectorY(object value)
         {
             return value == null ? 0f : Convert.ToSingle(Vector2Y.GetValue(value));
+        }
+
+        /// <summary>
+        /// Resolves the input layer the game copies the player's control fields from every frame:
+        /// <c>Terraria.GameInput.PlayerInput.Triggers</c> (a TriggersPack) whose <c>Current</c> is a
+        /// TriggersSet. Everything here is optional: without it the bridge still writes the player's own
+        /// control fields, which works only until the next Player.Update overwrites them.
+        /// </summary>
+        private void ResolveInputTriggers()
+        {
+            Assembly game = Player?.Assembly;
+            Type input = game?.GetType("Terraria.GameInput.PlayerInput", false);
+            if (input == null)
+            {
+                notes.Add("找不到 Terraria.GameInput.PlayerInput，移动只能直接写玩家控制字段（会被原版覆盖）。");
+                return;
+            }
+
+            InputTriggers = input.GetField("Triggers", Any);
+            Type pack = InputTriggers?.FieldType;
+            InputTriggersCurrent = pack?.GetField("Current", Any);
+            Type set = InputTriggersCurrent?.FieldType;
+            if (InputTriggers == null || InputTriggersCurrent == null || set == null)
+            {
+                notes.Add("拿不到 PlayerInput.Triggers.Current，移动只能直接写玩家控制字段（会被原版覆盖）。");
+                InputTriggers = null;
+                InputTriggersCurrent = null;
+                return;
+            }
+
+            InputLeft = FieldOrProperty(set, "Left");
+            InputRight = FieldOrProperty(set, "Right");
+            InputUp = FieldOrProperty(set, "Up");
+            InputDown = FieldOrProperty(set, "Down");
+            InputJump = FieldOrProperty(set, "Jump");
+            InputMouseLeft = FieldOrProperty(set, "MouseLeft");
+            if (InputLeft == null || InputRight == null || InputJump == null)
+            {
+                notes.Add("输入项名字对不上（Left/Right/Jump），移动只能直接写玩家控制字段。");
+                InputTriggers = null;
+                InputTriggersCurrent = null;
+            }
+        }
+
+        private static MemberInfo FieldOrProperty(Type type, string name)
+        {
+            FieldInfo field = type.GetField(name, Any);
+            if (field != null)
+            {
+                return field;
+            }
+
+            return type.GetProperty(name, Any);
         }
 
         private Type RequireType(Assembly game, string name)

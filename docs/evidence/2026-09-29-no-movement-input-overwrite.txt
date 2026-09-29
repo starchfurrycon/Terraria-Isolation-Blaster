@@ -1,0 +1,68 @@
+# 真机故障三：按键有效、盘点通过、角色却一步不动
+
+日期：2026-09-29
+场景：副本 `D:\zhadai-test`，世界「草剑挥打」，按 F10，小样本计划 40 发雷管。
+结果：游戏明显一顿一顿地卡，但角色没有任何移动或使用动作。按 F10 停止后游戏恢复正常。
+
+## 原始日志（`D:\zhadai-test\game\ZhaDai\runtime.log`，摘录）
+
+```
+2026-09-29 13:17:07  按下 F10：开始接管，共 40 发雷管。
+2026-09-29 13:17:07  开始接管，施工文件 D:\zhadai-test\game\ZhaDai\plan-quick.zplan，共 40 发雷管。
+2026-09-29 13:17:07  接管前盘点通过：雷管 3973 发（需要 45）、镐力 100%（需要 100）、待挖 0 格
+2026-09-29 13:17:07  [1 tick | 第 0/40 发] GoToStand：前往站位 #1 (1649,407) 站位 (1649,407)
+2026-09-29 13:17:46  按下 F10：停止接管。
+2026-09-29 13:17:46  已停止接管，游戏交还给你。
+```
+
+`status.txt` 停在 `enabled=0`、`position=4110.0,437.7`——39 秒里坐标几乎没变。
+
+## 判定
+
+- 热键、盘点、施工文件、状态机都正常：这三层前面的两次故障（缺依赖、执行器没创建）确实修好了。
+- 状态机一直停在 `GoToStand`，说明**执行器每帧都在下发移动指令，但游戏没照做**。
+- 卡顿来自每 30 tick 一次的寻路重算：位置不变 ⇒ 路线每次都判定过期 ⇒ 反复重算。
+
+## 根因
+
+`Terraria.Player.Update(int)`（反编译第 24558 行起）内部第 24978 行执行：
+
+```csharp
+PlayerInput.Triggers.Current.CopyInto(this);
+```
+
+`TriggersSet.CopyInto` 会把 `controlLeft/Right/Up/Down/Jump` 从**真实输入状态**重新赋值：
+
+```csharp
+p.controlLeft = Left;      // Left => KeyStatus["Left"]
+p.controlRight = Right;
+p.controlJump = Jump;
+```
+
+我们的钩子挂在 `Main.UpdateWorld_Players` 入口，也就是 `player[i].Update(i)` 之前，
+写进去的 `Player.controlLeft` 等字段在同一帧内被这行覆盖掉，随后 `Player.Update` 里的
+移动逻辑读到的永远是"没按方向键"。执行器于是每帧都在"请求移动"，每 30 tick 重算一次路线，
+角色一动不动——这正是真机上看到的现象。
+
+## 修复
+
+移动与使用改走输入层（`Terraria.GameInput.PlayerInput.Triggers.Current`，即原版每帧拷进
+玩家的那一份），也就是让游戏自己的走位逻辑去走：
+
+- `TerrariaBridge.SetMovement` 写 `Triggers.Current` 的 `Left/Right/Up/Down/Jump`，
+  同时保留写玩家字段作为同帧回退；
+- `ThrowDynamiteAt` 同样写 `MouseLeft`，否则扔雷管也会被覆盖；
+- 插件启动时记录一行「移动通道：输入层 PlayerInput.Triggers.Current」——
+  以后同类问题看一眼日志就能分辨"没下发指令"和"下发了但游戏不认"；
+- 第一次下发移动指令时记录一行 dx/dy/jump，作为"确实下发了"的直接证据。
+
+真机 exe 上核对：`PlayerInput.Triggers`、`TriggersPack.Current`、
+`TriggersSet.Left/Right/Up/Down/Jump/MouseLeft` 全部存在（`ZhaDai.Patcher verify` 共 69 项、0 缺失）。
+
+## 顺带修的卡顿
+
+- 目标在搜索窗口外时，窗口化搜索必然失败却会把窗口扩满，且每次重算都来一遍。
+  现在改为朝目标方向取"窗口内最远的一格"作为中途目标，走一段再看下一段。
+- `routeRestarts` 分支原本每帧重规划，现在同样受 `PathRecomputeTicks` 节流。
+- 参数按 `--pathbench` 实测收紧：窗口半径 96→64、节点上限 20000→6000、重算间隔 30→90 tick。
+  实测最坏单次（目标在窗口外、扩满）：3.4 ms → 1.3 ms；可达目标约 0.9 ms。

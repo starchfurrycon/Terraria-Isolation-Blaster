@@ -32,6 +32,13 @@ internal static class Program
             WallHistogramTool.Run(args[1]);
             return 0;
         }
+
+        if (args.Length >= 1 && args[0] == "--pathbench")
+        {
+            PathBench.Run();
+            return 0;
+        }
+
         RunWorldIntegrationTests(args);
 
         Console.WriteLine();

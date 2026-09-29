@@ -86,6 +86,16 @@ namespace ZhaDai.Runtime
             Field("Terraria.Player", "controlDown", true, "向下"),
             Field("Terraria.Player", "controlJump", true, "跳跃"),
             Field("Terraria.Player", "controlUseItem", true, "使用手持物品"),
+            // 输入层。Player.Update 每帧把这里拷到玩家的 control* 字段上，所以真正能让角色动起来的是这一层；
+            // 上面那几个 Player.controlX 只是同帧回退（真机上会被原版覆盖）。
+            Field("Terraria.GameInput.PlayerInput", "Triggers", false, "输入触发器包（移动走输入层）"),
+            Field("Terraria.GameInput.TriggersPack", "Current", false, "当前帧的输入项集合"),
+            Property("Terraria.GameInput.TriggersSet", "Left", false, "输入：向左"),
+            Property("Terraria.GameInput.TriggersSet", "Right", false, "输入：向右"),
+            Property("Terraria.GameInput.TriggersSet", "Up", false, "输入：向上"),
+            Property("Terraria.GameInput.TriggersSet", "Down", false, "输入：向下"),
+            Property("Terraria.GameInput.TriggersSet", "Jump", false, "输入：跳跃"),
+            Property("Terraria.GameInput.TriggersSet", "MouseLeft", false, "输入：使用物品"),
             Field("Terraria.Player", "ownedProjectileCounts", false, "自己拥有的弹幕数量，用来判断雷管有没有丢出去"),
             Field("Terraria.Player", "inventory", true, "物品栏"),
             Field("Terraria.Player", "selectedItemState", true, "选中的物品栏格"),

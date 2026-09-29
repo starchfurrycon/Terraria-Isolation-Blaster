@@ -31,6 +31,12 @@ namespace ZhaDai.Runtime
         private long frame;
         private bool keepUsingItem;
 
+        /// <summary>How many times writing an input trigger failed, so the log says it once or twice, not per frame.</summary>
+        private int inputProblems;
+
+        /// <summary>Whether the one-off "first movement command" line has been written yet.</summary>
+        private bool moveLogged;
+
         internal TerrariaBridge(GameReflection reflection)
         {
             this.reflection = reflection;
@@ -549,7 +555,55 @@ namespace ZhaDai.Runtime
             }
 
             reflection.PlayerControlUseItem.SetValue(player, true);
+
+            // Same overwrite story as movement: Player.Update takes controlUseItem from the input layer, so
+            // the input trigger is what actually makes the game throw the dynamite.
+            SetInput(reflection.InputMouseLeft, true);
             keepUsingItem = true;
+        }
+
+        /// <summary>
+        /// Writes one entry of <c>PlayerInput.Triggers.Current</c>, the set the game copies into the player's
+        /// control fields every frame. Missing members are silently ignored: the caller has already written
+        /// the player's own field as a fallback.
+        /// </summary>
+        private void SetInput(MemberInfo member, bool value)
+        {
+            if (member == null || reflection.InputTriggers == null || reflection.InputTriggersCurrent == null)
+            {
+                return;
+            }
+
+            try
+            {
+                object pack = reflection.InputTriggers.GetValue(null);
+                object set = pack == null ? null : reflection.InputTriggersCurrent.GetValue(pack);
+                if (set == null)
+                {
+                    return;
+                }
+
+                FieldInfo field = member as FieldInfo;
+                if (field != null)
+                {
+                    field.SetValue(set, value);
+                    return;
+                }
+
+                PropertyInfo property = member as PropertyInfo;
+                if (property != null && property.CanWrite)
+                {
+                    property.SetValue(set, value, null);
+                }
+            }
+            catch (Exception exception)
+            {
+                inputProblems++;
+                if (inputProblems <= 3)
+                {
+                    Log("写输入项失败（" + member.Name + "）：" + exception.Message);
+                }
+            }
         }
 
         public void DigTile(int x, int y)
@@ -564,11 +618,31 @@ namespace ZhaDai.Runtime
 
         public void SetMovement(int dx, int dy, bool jump)
         {
+            // The input layer first: Player.Update copies Triggers.Current into the player's control fields,
+            // so anything written straight onto the player is thrown away one frame later. This is the path
+            // that actually moves the character.
+            SetInput(reflection.InputLeft, dx < 0);
+            SetInput(reflection.InputRight, dx > 0);
+            SetInput(reflection.InputUp, dy < 0);
+            SetInput(reflection.InputDown, dy > 0);
+            SetInput(reflection.InputJump, jump && dy <= 0);
+
+            // One line, once: the log then shows the plugin really did ask for movement, which separates
+            // "no movement was requested" from "movement was requested and the game ignored it".
+            if (!moveLogged && (dx != 0 || dy != 0))
+            {
+                moveLogged = true;
+                Log("第一次下发移动指令：dx=" + dx + " dy=" + dy + " jump=" + jump
+                    + (reflection.InputTriggers != null ? "（走输入层）" : "（只写了玩家字段）"));
+            }
+
             if (player == null)
             {
                 return;
             }
 
+            // Belt and braces: also write the player's own fields, which is what a same-frame read (ours)
+            // sees, and which still works on a build where the input layer could not be resolved.
             Set(reflection.PlayerControlLeft, dx < 0);
             Set(reflection.PlayerControlRight, dx > 0);
             Set(reflection.PlayerControlUp, dy < 0);

@@ -2,6 +2,31 @@
 
 ## 0.1.3-alpha（待真机确认后打标签）
 
+**角色一步不动：写进 `Player.controlLeft` 的移动被原版每帧覆盖**
+
+- 现象：按键生效（日志有「开始接管」）、盘点通过（雷管 3973、镐力 100%）、状态机停在
+  「前往站位 #1」，39 秒里角色没有任何移动或使用动作，同时游戏一顿一顿地卡。
+- 根因：`Terraria.Player.Update(int)` 内部会执行
+  `PlayerInput.Triggers.Current.CopyInto(this)`，把 `controlLeft/Right/Up/Down/Jump`
+  从真实输入状态重新赋值。我们的钩子挂在 `Main.UpdateWorld_Players` 入口（即 `player[i].Update(i)` 之前），
+  写进去的控制字段在同一帧被覆盖，`Player.Update` 里的移动逻辑读到的永远是"没按方向键"。
+- 修法：移动与使用改走输入层 `Terraria.GameInput.PlayerInput.Triggers.Current`
+  （写 `Left/Right/Up/Down/Jump/MouseLeft`），让游戏自己的走位逻辑去走；玩家字段保留为同帧回退。
+  插件启动日志新增「移动通道」一行，第一次下发移动指令时记录 dx/dy/jump。
+- 真机 exe 已核对输入层成员（`verify` 共 69 项、0 缺失）。
+
+**顺带修掉真机卡顿（同一现象的第二个来源）**
+
+- 目标在搜索窗口外时，窗口化搜索必然失败却会把窗口整片扩满，而且每次重算都重来一遍。
+  现在改成朝目标方向取窗口内最远的一格做中途目标，走一段再规划下一段。
+- `routeRestarts` 分支原本每帧重规划，现在同受 `PathRecomputeTicks` 节流。
+- 新增 `--pathbench` 实测：窗口半径 96→64、节点上限 20000→6000、重算 30→90 tick；
+  最坏单次 3.4 ms→1.3 ms，可达目标约 0.9 ms。
+
+**测试副本的小样本改为"离出生点最近的 40 发"**
+
+- 原来取规划顺序的前 40 发，可能在两千格以外，按了键要走很久才看到第一个动作，没法判断接管对不对。
+
 **F10 毫无反应：`Keys[] as object[]` 恒为 null**
 
 - 现象：插件正常加载、反射自检通过、施工文件也读到了，但按 F10 什么也不发生，日志里连一行按键记录都没有。

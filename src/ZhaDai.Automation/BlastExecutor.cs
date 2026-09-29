@@ -86,13 +86,13 @@ namespace ZhaDai.Automation
         /// How often the walking route is recomputed. The world changes under the player (that is the
         /// whole point of the run), but recomputing an A* search every tick would be wasteful.
         /// </summary>
-        public int PathRecomputeTicks { get; set; } = 30;
+        public int PathRecomputeTicks { get; set; } = 90;
 
         /// <summary>Give up on a route search after this many expanded tiles and walk straight instead.</summary>
-        public int PathNodeLimit { get; set; } = 20000;
+        public int PathNodeLimit { get; set; } = 6000;
 
         /// <summary>How far around the player and the target the route search may look, in tiles.</summary>
-        public int PathWindowRadius { get; set; } = 96;
+        public int PathWindowRadius { get; set; } = 64;
 
         /// <summary>Cost of mining a tile relative to walking one, in tenths: 120 means twelve tiles of walking.</summary>
         public int PathDigCost { get; set; } = 120;
@@ -1138,7 +1138,12 @@ namespace ZhaDai.Automation
                 }
 
                 routeRestarts++;
-                PlanTravel(game, px, py, targetX, targetY);
+                // Throttle this like any other replan: without the guard the branch below ran on every frame
+                // the player stood next to a solid waypoint, which is a search per frame.
+                if (game.Tick - travelTick > options.PathRecomputeTicks)
+                {
+                    PlanTravel(game, px, py, targetX, targetY);
+                }
                 walkStuck++;
                 if (!travelValid)
                 {
@@ -1172,7 +1177,24 @@ namespace ZhaDai.Automation
             };
 
             TilePathfinder finder = new TilePathfinder(game, pathOptions);
-            PathResult path = finder.FindPath(px, py, targetX, targetY);
+
+            // A goal outside the search window can never be reached by a windowed search: it expands every
+            // node it is allowed to and then reports failure. With a charge two thousand tiles away that cost
+            // repeats on every recompute for the whole walk (the stutter in the first real-machine run), and
+            // it buys nothing. Aim at the furthest tile along the straight line that still fits in the window;
+            // the next recompute simply moves the aim further along.
+            int aimX = targetX;
+            int aimY = targetY;
+            int reach = Math.Max(8, options.PathWindowRadius / 2);
+            int chebyshev = Math.Max(Math.Abs(targetX - px), Math.Abs(targetY - py));
+            bool aimed = chebyshev > reach;
+            if (aimed)
+            {
+                aimX = px + (int)Math.Round((targetX - px) * (double)reach / chebyshev);
+                aimY = py + (int)Math.Round((targetY - py) * (double)reach / chebyshev);
+            }
+
+            PathResult path = finder.FindPath(px, py, aimX, aimY);
             if (!path.Found || path.Waypoints.Count == 0)
             {
                 lastPathNote = "寻路失败：" + path.Failure + "（退回直线走法）";
@@ -1193,7 +1215,7 @@ namespace ZhaDai.Automation
             status.LastRouteNote = lastPathNote;
             lastPathNote = string.Format(
                 CultureInfo.InvariantCulture,
-                "路线 {0} 步，其中要挖 {1} 格",
+                aimed ? "路线 {0} 步（离目标还远，先朝它走这一段），其中要挖 {1} 格" : "路线 {0} 步，其中要挖 {1} 格",
                 path.Waypoints.Count,
                 path.DigTiles);
         }
