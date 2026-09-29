@@ -19,6 +19,12 @@ internal sealed class UiZone
     public bool Contains(Point point) => Bounds.Contains(point);
 }
 
+/// <summary>
+/// A short line the window draws, together with the rectangle it is drawn in. The renderer and the
+/// smoke test's "is anything painted here" check both use these, so the two cannot drift.
+/// </summary>
+internal readonly record struct UiLabel(string Text, Rectangle Bounds);
+
 /// <summary>Every clickable surface of the window.</summary>
 internal enum UiAction
 {
@@ -189,6 +195,9 @@ internal sealed class UiLayout
             resultTitleRow.Width + 8,
             Math.Max(0, resultCard.Bottom - UiTheme.Padding - resultBody.Bottom - 6));
 
+        // World rows: 34px each, as many as fit in the list box.
+        int visibleWorldRows = Math.Min(worldCount, Math.Max(1, (worldList.Height - 4) / 34));
+
         UiLayout layout = new()
         {
             Client = box,
@@ -217,6 +226,7 @@ internal sealed class UiLayout
             MinimiseButton = minimise,
             Grip = new Rectangle(client.Width - 18, client.Height - 18, 14, 14),
             ExtraExpanded = extraExpanded,
+            VisibleWorldRows = visibleWorldRows,
         };
 
         // Knob rows: a compact label plus a three part stepper, one row per knob.
@@ -245,10 +255,8 @@ internal sealed class UiLayout
                 Math.Max(24, actionCard.Height - (buttonTop - actionCard.Y) - 42)));
         }
 
-        // World rows.
-        int visible = Math.Min(worldCount, Math.Max(1, (worldList.Height - 4) / 34));
-        layout.VisibleWorldRows = visible;
-        for (int i = 0; i < visible; i++)
+        // World rows: one entry per visible file.
+        for (int i = 0; i < visibleWorldRows; i++)
         {
             layout.WorldRows.Add(new Rectangle(worldList.X, worldList.Y + 2 + (i * 34), worldList.Width, 32));
         }

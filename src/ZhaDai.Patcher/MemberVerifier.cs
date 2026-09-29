@@ -259,12 +259,14 @@ namespace ZhaDai.Patcher
             yield return new RequirementView("Terraria.Main", "", "Type", true, null);
             yield return new RequirementView("Terraria.Player", "", "Type", true, null);
             yield return new RequirementView("Terraria.Item", "", "Type", true, null);
+            yield return new RequirementView("Terraria.GameInput.TriggersSet", "", "Type", true, null);
             yield return new RequirementView("Terraria.GameInput.TriggersSet", "CopyInto", "Method", true,
-                new[] { "Terraria.Player", "Terraria.GameInput.PlayerInput" });
+                new[] { "Terraria.Player" });
             yield return new RequirementView("Terraria.Main", "player", "Field", true, null);
             yield return new RequirementView("Terraria.Main", "myPlayer", "Field", true, null);
-            yield return new RequirementView("Terraria.Player", "whoAmI", "Field", false, null);
-            yield return new RequirementView("Terraria.Player", "selectedItem", "Field", false, null);
+            yield return new RequirementView("Terraria.Main", "GameUpdateCount", "Property", false, null);
+            yield return new RequirementView("Terraria.Entity", "whoAmI", "Field", false, null);
+            yield return new RequirementView("Terraria.Player", "selectedItem", "Property", false, null);
         }
 
         /// <summary>

@@ -1,3 +1,4 @@
+using System.Drawing.Drawing2D;
 using System.Drawing.Text;
 
 namespace ZhaDai.Manager;
@@ -13,9 +14,9 @@ internal static class UiTheme
     public static readonly Color Canvas = Rgb(0xFA, 0xFA, 0xFB);
     public static readonly Color Surface = Rgb(0xFF, 0xFF, 0xFF);
     public static readonly Color Subtle = Rgb(0xF4, 0xF5, 0xF7);
-    public static readonly Color Border = Rgb(0xD6, 0xDA, 0xE0);
+    public static readonly Color BorderColor = Rgb(0xD6, 0xDA, 0xE0);
     public static readonly Color Accent = Rgb(0x40, 0x78, 0xC8);
-    public static readonly Color Text = Rgb(0x20, 0x24, 0x2C);
+    public static readonly Color TextColor = Rgb(0x20, 0x24, 0x2C);
     public static readonly Color Muted = Rgb(0x7A, 0x82, 0x8E);
     public static readonly Color Disabled = Rgb(0xB2, 0xB8, 0xC2);
     public static readonly Color AccentSoft = Rgb(0xE8, 0xF0, 0xFC);

@@ -111,9 +111,6 @@ namespace ZhaDai.Patcher
 
         private static int CommandPatchCopy(Options options)
         {
-            var exe = ResolveTerraria(options);
-            if (exe == null) return ExitUsage;
-
             var output = options.Out;
             if (string.IsNullOrWhiteSpace(output))
             {
@@ -126,10 +123,15 @@ namespace ZhaDai.Patcher
 
             if (options.VerifyOnly)
             {
+                // --verify-only only inspects an existing file, so it must not require
+                // --terraria: the copy may live somewhere the locator cannot see.
                 Console.WriteLine("模式: 只做回读校验（--verify-only），不会写出任何文件。");
                 Console.WriteLine();
                 return ReportValidationOnly(output);
             }
+
+            var exe = ResolveTerraria(options);
+            if (exe == null) return ExitUsage;
 
             var plugin = options.Plugin;
             if (string.IsNullOrWhiteSpace(plugin))
@@ -143,7 +145,24 @@ namespace ZhaDai.Patcher
                 Console.WriteLine("提示: 输出文件已存在，将被覆盖：" + output);
             }
 
-            var report = new AssemblyPatcher().Patch(exe, output, plugin);
+            // The injected reference is resolved by simple name from the application
+            // directory, so the runtime must sit next to the executable it was patched into.
+            // It is deployed *before* the patch so the post-write validation can assert it.
+            var pluginTarget = Path.Combine(Path.GetDirectoryName(output), HookContract.RuntimeAssemblyFileName);
+            var runtimeBeside = (string)null;
+            if (options.NoPluginCopy)
+            {
+                Console.WriteLine("已跳过插件副本拷贝（--no-plugin-copy）。要让副本能真正启动，需要把 " +
+                                  HookContract.RuntimeAssemblyFileName + " 放到 " + Path.GetDirectoryName(output) + "。");
+            }
+            else
+            {
+                File.Copy(plugin, pluginTarget, true);
+                runtimeBeside = pluginTarget;
+                Console.WriteLine("已把插件拷贝到副本同级: " + pluginTarget);
+            }
+
+            var report = new AssemblyPatcher().Patch(exe, output, plugin, runtimeBeside);
 
             Console.WriteLine("源程序集:   " + report.SourceExe);
             Console.WriteLine("  大小 " + new FileInfo(report.SourceExe).Length + " 字节");
@@ -161,22 +180,6 @@ namespace ZhaDai.Patcher
             {
                 Console.WriteLine("说明:");
                 foreach (var note in report.Notes) Console.WriteLine("  · " + note);
-            }
-
-            // The injected reference is resolved by simple name from the application
-            // directory, so the runtime must sit next to the executable it was patched into.
-            var pluginTarget = Path.Combine(Path.GetDirectoryName(report.OutputExe), HookContract.RuntimeAssemblyFileName);
-            if (options.NoPluginCopy)
-            {
-                Console.WriteLine();
-                Console.WriteLine("已跳过插件副本拷贝（--no-plugin-copy）。要让副本能真正启动，需要把 " +
-                                  HookContract.RuntimeAssemblyFileName + " 放到 " + Path.GetDirectoryName(report.OutputExe) + "。");
-            }
-            else
-            {
-                File.Copy(report.PluginDll, pluginTarget, true);
-                Console.WriteLine();
-                Console.WriteLine("已把插件拷贝到副本同级: " + pluginTarget);
             }
 
             Console.WriteLine();

@@ -27,10 +27,24 @@ namespace ZhaDai.Patcher
     public sealed class AssemblyPatcher
     {
         /// <summary>
+        /// <summary>
         /// Writes the patched assembly to <paramref name="outputExe"/> and validates it by
         /// re-opening the written file. Never touches <paramref name="sourceExe"/>.
         /// </summary>
         public PatchReport Patch(string sourceExe, string outputExe, string pluginDll)
+        {
+            return Patch(sourceExe, outputExe, pluginDll, null);
+        }
+        /// <summary>
+        /// Writes the patched assembly to <paramref name="outputExe"/> and validates it by
+        /// re-opening the written file. Never touches <paramref name="sourceExe"/>.
+        ///
+        /// <paramref name="runtimeBesidePath"/> is the location the runtime DLL will occupy
+        /// next to the *final* executable. When given, the validation additionally asserts that
+        /// the file exists there; pass the game directory path during install, because the file
+        /// is replaced in place after the patch has been written to a temporary path.
+        /// </summary>
+        public PatchReport Patch(string sourceExe, string outputExe, string pluginDll, string runtimeBesidePath)
         {
             var source = Path.GetFullPath(sourceExe);
             var output = Path.GetFullPath(outputExe);
@@ -57,7 +71,6 @@ namespace ZhaDai.Patcher
             }))
             {
                 report.PluginAssembly = pluginModule.Assembly.Name.Name;
-                report.RuntimeReference = BuildAssemblyReference(module, pluginModule.Assembly.Name);
 
                 var hooksType = HookContract.ResolveHooksType(pluginModule);
                 report.HooksType = hooksType.FullName;
@@ -78,8 +91,12 @@ namespace ZhaDai.Patcher
                 var a2 = anchors[1].Method;
                 var a3 = anchors[2].Method;
 
+                // Refuse to stack patches before mutating anything, in particular before the
+                // new AssemblyNameReference below would itself look like an existing install.
                 EnsureNotAlreadyPatched(module, a1, a2, a3);
                 report.AlreadyPatched = false;
+
+                report.RuntimeReference = BuildAssemblyReference(module, pluginModule.Assembly.Name);
 
                 // A1 - entry of the world player update.
                 InjectAtStart(a1, new[]
@@ -113,7 +130,7 @@ namespace ZhaDai.Patcher
                 module.Write(output, new WriterParameters { WriteSymbols = false });
             }
 
-            report.Validation = Validate(output);
+            report.Validation = Validate(output, runtimeBesidePath);
             report.WrittenSize = new FileInfo(output).Length;
             report.WrittenSha256 = InstallationService.Sha256(output);
             return report;
@@ -124,6 +141,20 @@ namespace ZhaDai.Patcher
         /// bytes on disk count; "I think I inserted it" is not evidence.
         /// </summary>
         public static PatchValidation Validate(string patchedExe)
+        {
+            return Validate(patchedExe, null);
+        }
+
+        /// <summary>
+        /// Same check, plus an optional assertion that the runtime DLL actually sits where the
+        /// CLR will look for it. When <paramref name="runtimeBesidePath"/> is null the check is
+        /// skipped (the caller may not have deployed the payload yet); otherwise it must be the
+        /// full path the runtime DLL is expected to occupy next to the final executable.
+        /// The CLR resolves the injected AssemblyRef by simple name from the application
+        /// directory only, so a patched exe without its plugin is a guaranteed
+        /// <c>FileNotFoundException</c> at game startup.
+        /// </summary>
+        public static PatchValidation Validate(string patchedExe, string runtimeBesidePath)
         {
             var validation = new PatchValidation();
 
@@ -137,6 +168,15 @@ namespace ZhaDai.Patcher
                 }
                 validation.RuntimeReference = reference.FullName;
                 validation.Checks.Add("程序集引用 " + reference.FullName + " 存在。");
+
+                if (!string.IsNullOrWhiteSpace(runtimeBesidePath) && !File.Exists(runtimeBesidePath))
+                {
+                    throw new PatchException("注入结果旁边没有 " + HookContract.RuntimeAssemblyFileName +
+                                             "（" + runtimeBesidePath + "）。CLR 只在宿主目录与 GAC 里探测程序集，" +
+                                             "缺了它游戏启动会以 FileNotFoundException 崩掉。");
+                }
+                if (!string.IsNullOrWhiteSpace(runtimeBesidePath))
+                    validation.Checks.Add("插件已就位：" + runtimeBesidePath);
 
                 var anchors = AnchorResolver.ResolveAll(module);
                 foreach (var anchor in anchors)
@@ -192,8 +232,9 @@ namespace ZhaDai.Patcher
             reference.Culture = pluginName.Culture;
             reference.IsRetargetable = pluginName.IsRetargetable;
 
-            // Importing the reference itself registers it in target.AssemblyReferences.
-            target.ImportReference(reference);
+            // Registering it on the target module is what makes `ImportReference(hook)` scope
+            // the hook's TypeRef to `ZhaDai.Runtime` instead of to Terraria itself.
+            target.AssemblyReferences.Add(reference);
             return reference;
         }
 

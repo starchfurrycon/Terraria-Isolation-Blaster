@@ -163,13 +163,11 @@ internal static class WorldCatalog
         }
         catch (IOException)
         {
+            // Unreadable or truncated header (EndOfStreamException is an IOException): the row
+            // still appears in the list, just without a parsed title.
             return null;
         }
         catch (UnauthorizedAccessException)
-        {
-            return null;
-        }
-        catch (EndOfStreamException)
         {
             return null;
         }

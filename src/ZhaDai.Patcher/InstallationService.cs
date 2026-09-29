@@ -210,7 +210,11 @@ namespace ZhaDai.Patcher
             terrariaExe = Path.GetFullPath(terrariaExe);
             pluginDll = Path.GetFullPath(pluginDll);
 
-            EnsureGameClosed();
+            // A dry run writes nothing at all, so it must not be blocked by a running game:
+            // the whole point is to be able to inspect the report at any time. A real install
+            // touches the file, so the check is mandatory there.
+            if (!dryRun)
+                EnsureGameClosed(terrariaExe);
 
             if (!File.Exists(pluginDll))
                 throw new PatchException("缺少注入载荷：" + pluginDll);
@@ -269,21 +273,34 @@ namespace ZhaDai.Patcher
                     log.Add("以当前原版 Terraria.exe 为基准注入。");
                 }
 
-                // 2. Patch into a temporary file and validate the written bytes.
-                PatchReport reportSource = null;
+                // 2. Deploy the payload. The injected reference is resolved by simple name from
+                //    the application directory only, so the plugin must be copied next to
+                //    Terraria.exe *before* the patched image can be validated there.
+                var runtimeBeside = Path.Combine(Path.GetDirectoryName(terrariaExe), HookContract.RuntimeAssemblyFileName);
+                if (!dryRun)
+                {
+                    Directory.CreateDirectory(DataDirectory(terrariaExe));
+                    File.Copy(pluginDll, runtimeBeside, true);
+                    log.Add("已部署插件到 " + runtimeBeside);
+                }
+
+                // 3. Patch into a temporary file and validate the written bytes.
+                AssemblyPatcher.PatchReport reportSource = null;
                 if (dryRun)
                 {
                     // Dry run still performs the full injection into a scratch copy so the
                     // report is the real thing, but nothing inside the game directory changes.
+                    // The runtime-beside assertion is skipped: a dry run must not require the
+                    // payload to be deployed yet.
                     var scratch = Path.Combine(Path.GetTempPath(), "zhaodai-dryrun-" + Guid.NewGuid().ToString("N") + ".exe");
-                    var report = new AssemblyPatcher().Patch(patchSource, scratch, pluginDll);
+                    var report = new AssemblyPatcher().Patch(patchSource, scratch, pluginDll, null);
                     reportSource = report;
                     log.Add("演练模式：注入结果写到了临时文件 " + scratch + "（未进入游戏目录）。");
                     try { File.Delete(scratch); } catch (IOException) { }
                 }
                 else
                 {
-                    var report = new AssemblyPatcher().Patch(patchSource, patchedTemp, pluginDll);
+                    var report = new AssemblyPatcher().Patch(patchSource, patchedTemp, pluginDll, runtimeBeside);
                     reportSource = report;
                     log.Add("注入副本已写出并校验：" + patchedTemp);
                 }
@@ -302,8 +319,7 @@ namespace ZhaDai.Patcher
                     return status;
                 }
 
-                // 3. Back up the original (never overwriting an existing backup).
-                Directory.CreateDirectory(DataDirectory(terrariaExe));
+                // 4. Back up the original (never overwriting an existing backup).
                 if (!File.Exists(backup))
                 {
                     File.Copy(terrariaExe, backup, true);
@@ -314,11 +330,11 @@ namespace ZhaDai.Patcher
                     log.Add("备份已存在，保持不动：" + backup);
                 }
 
-                // 4. Atomic replace.
+                // 5. Atomic replace.
                 File.Replace(patchedTemp, terrariaExe, null, true);
                 log.Add("已用 File.Replace 原子替换 Terraria.exe。");
 
-                // 5. Manifest (UTF-8 without BOM).
+                // 6. Manifest (UTF-8 without BOM).
                 var manifestWrite = new InstallManifest
                 {
                     ToolVersion = ToolVersion,
@@ -357,7 +373,7 @@ namespace ZhaDai.Patcher
         public InstallStatus Restore(string terrariaExe)
         {
             terrariaExe = Path.GetFullPath(terrariaExe);
-            EnsureGameClosed();
+            EnsureGameClosed(terrariaExe);
 
             if (!File.Exists(terrariaExe))
                 return New(InstallState.NotFound, terrariaExe, null, null, "未找到 Terraria.exe。");
@@ -408,18 +424,49 @@ namespace ZhaDai.Patcher
             }
         }
 
-        public static void EnsureGameClosed()
+        /// <summary>
+        /// Refuses to touch an executable that is currently loaded by a process named
+        /// "Terraria". Compared by full image path: an install is blocked by a *running game*
+        /// (half-written files plus a Windows file lock), not by an unrelated sandbox copy, and
+        /// conversely a sandbox round-trip can never be mistaken for a real install. If the
+        /// image path cannot be read the process is treated as a match, i.e. fail closed.
+        /// </summary>
+        public static void EnsureGameClosed(string terrariaExe)
         {
+            var target = Path.GetFullPath(terrariaExe);
             var running = Process.GetProcessesByName("Terraria");
+            var blocking = new List<string>();
             try
             {
-                if (running.Length > 0)
-                    throw new PatchException("Terraria 正在运行（" + running.Length + " 个进程），请先退出游戏再安装或还原。");
+                foreach (var process in running)
+                {
+                    string imagePath = null;
+                    try
+                    {
+                        imagePath = process.MainModule == null ? null : process.MainModule.FileName;
+                    }
+                    catch (Exception)
+                    {
+                        // Access denied or the process already exited: treat as a match.
+                    }
+
+                    if (imagePath == null)
+                    {
+                        blocking.Add("#" + process.Id + "（无法读取映像路径，按占用处理）");
+                        continue;
+                    }
+                    if (Path.GetFullPath(imagePath).Equals(target, StringComparison.OrdinalIgnoreCase))
+                        blocking.Add("#" + process.Id + " " + imagePath);
+                }
             }
             finally
             {
                 foreach (var process in running) process.Dispose();
             }
+
+            if (blocking.Count > 0)
+                throw new PatchException("Terraria 正在运行并且占用的就是目标文件：" + string.Join("、", blocking.ToArray()) +
+                                         "。请先退出游戏再安装或还原。");
         }
 
         /// <summary>True when the assembly references ZhaDai.Runtime, i.e. our hooks are in there.</summary>
@@ -427,7 +474,7 @@ namespace ZhaDai.Patcher
         {
             try
             {
-                using (var module = ModuleDefinitionReader.Open(exePath))
+                using (var module = ModuleDefinition.ReadModule(exePath, new ReaderParameters { InMemory = true, ReadSymbols = false }))
                 {
                     return module.AssemblyReferences.Any(r => r.Name == HookContract.RuntimeAssemblyName);
                 }

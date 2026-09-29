@@ -1,0 +1,24 @@
+<Project Sdk="Microsoft.NET.Sdk">
+
+  <PropertyGroup>
+    <OutputType>WinExe</OutputType>
+    <TargetFramework>net8.0-windows</TargetFramework>
+    <!-- UseWindowsForms on net8.0-windows is what supplies System.Drawing, so there is no
+         System.Drawing.Common package reference and no other NuGet dependency. -->
+    <UseWindowsForms>true</UseWindowsForms>
+    <Nullable>enable</Nullable>
+    <ImplicitUsings>enable</ImplicitUsings>
+    <LangVersion>latest</LangVersion>
+    <TreatWarningsAsErrors>true</TreatWarningsAsErrors>
+    <EnforceCodeStyleInBuild>false</EnforceCodeStyleInBuild>
+    <RootNamespace>ZhaDai.Manager</RootNamespace>
+    <AssemblyName>zhaodai-ui</AssemblyName>
+    <Version>0.1.0-alpha</Version>
+    <Description>Desktop front end for the ZhaDai containment planner: pick a world, tune the knobs, plan, export.</Description>
+  </PropertyGroup>
+
+  <ItemGroup>
+    <ProjectReference Include="..\ZhaDai.Core\ZhaDai.Core.csproj" />
+  </ItemGroup>
+
+</Project>

@@ -1,0 +1,27 @@
+<Project Sdk="Microsoft.NET.Sdk">
+
+  <PropertyGroup>
+    <TargetFramework>net48</TargetFramework>
+    <PlatformTarget>x86</PlatformTarget>
+    <LangVersion>7.3</LangVersion>
+    <TreatWarningsAsErrors>true</TreatWarningsAsErrors>
+    <AssemblyName>ZhaDai.Runtime</AssemblyName>
+    <RootNamespace>ZhaDai.Runtime</RootNamespace>
+    <Version>0.1.0-alpha</Version>
+    <AppendTargetFrameworkToOutputPath>false</AppendTargetFrameworkToOutputPath>
+    <OutputPath>bin\$(Configuration)\net48\</OutputPath>
+    <GenerateAssemblyInfo>true</GenerateAssemblyInfo>
+    <DebugType>none</DebugType>
+  </PropertyGroup>
+
+  <ItemGroup>
+    <ProjectReference Include="..\ZhaDai.Automation\ZhaDai.Automation.csproj" />
+  </ItemGroup>
+
+  <ItemGroup>
+    <!-- The plugin must never reference Terraria at compile time: it is loaded next to Terraria.exe
+         and talks to it purely through reflection, so a game update changes nothing here. -->
+    <PackageReference Include="Microsoft.NETFramework.ReferenceAssemblies" Version="1.0.3" PrivateAssets="all" />
+  </ItemGroup>
+
+</Project>

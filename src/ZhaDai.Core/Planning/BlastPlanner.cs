@@ -279,10 +279,20 @@ public static class BlastPlanner
 
         if (vineAnchors > 0)
         {
+            string tail = opts.VineReach > 0
+                ? $"计划已按向下 {opts.VineReach} 格的藤蔓路径加挖了竖井封带；" +
+                  "想彻底断根，最稳的是把这批带草物块本身炸掉或换成不可感染物块（只炸掉这些物块比整条竖井省得多）。"
+                : "本次没有按藤蔓路径加挖竖井（--vine-reach=0），所以**这些物块下方的空气通道没有被封住**：" +
+                  "只要它们还在、下方还是空的，藤蔓迟早会把感染带下去。要么把它们本身炸掉，" +
+                  "要么用 --vine-reach 重算一次。";
+
             notes.Add(
                 $"隔离带内侧有 {vineAnchors} 格带草的前沿物块，它们下方是空的，会顺着空气长成腐化/猩红藤蔓" +
-                $"，而藤蔓本身就是传播源（原版 CheckVines 会把藤蔓染成对应种类）。计划已按向下 {opts.VineReach} 格" +
-                "的藤蔓路径加挖了竖井封带；想彻底断根，最稳的是把这批带草物块本身炸掉或换成不可感染物块。");
+                $"，而藤蔓本身就是传播源（原版 CheckVines 会把藤蔓染成对应种类）。{tail}");
+        }
+        else if (opts.VineReach > 0)
+        {
+            notes.Add($"没有发现会长藤蔓的带草前沿物块（按向下 {opts.VineReach} 格检查），藤蔓这条路这次不用额外处理。");
         }
 
         notes.Add(

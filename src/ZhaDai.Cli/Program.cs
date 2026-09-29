@@ -32,6 +32,7 @@ internal static class Program
             return args[0] switch
             {
                 "plan" => RunPlan(args[1..]),
+                "arm" => RunArm(args[1..]),
                 "info" => RunInfo(args[1..]),
                 _ => Fail($"未知命令：{args[0]}"),
             };
@@ -130,6 +131,132 @@ internal static class Program
         return ExitUsage;
     }
 
+    /// <summary>
+    /// Plans a world and leaves the runtime everything it needs to run it: the work order and a
+    /// config file under the game's ZhaDai folder. Nothing here touches the game, the save or the
+    /// executable; arming only prepares files, and the config is written disabled unless --go is
+    /// passed, so planning never starts a run by accident.
+    /// </summary>
+    private static int RunArm(string[] args)
+    {
+        Options options = Options.Parse(args);
+        if (options.Positional.Count != 1)
+        {
+            return Fail("用法：zhaodai arm <world.wld> [--game=<泰拉瑞亚目录>] [--go] [--force]");
+        }
+
+        string worldPath = options.Positional[0];
+        string gameDirectory = ResolveGameDirectory(options.GameDirectory);
+
+        BlastPlanOptions planOptions = new()
+        {
+            Clearance = options.Clearance,
+            MergeLinkDistance = options.MergeLinkDistance,
+            MaxSections = options.MaxSections,
+            VineReach = options.VineReach,
+            ExtraSeedRects = options.ExtraSeedRects,
+        };
+
+        LoadedWorld world = WorldFileReader.Read(worldPath);
+        BlastPlan plan = BlastPlanner.Plan(world, planOptions);
+        Console.Write(PlanWriter.ToTextReport(plan));
+
+        if (!plan.Summary.AllSectionsSealed && !options.Force)
+        {
+            Console.Error.WriteLine(
+                "有隔离段没过泛洪复核，不写出施工文件：照着炸了也可能漏。\n" +
+                "先加大 --clearance 或 --vine-reach 重算；确实想照炸就加 --force。");
+            return ExitFailure;
+        }
+
+        string dataDirectory = Path.Combine(gameDirectory, "ZhaDai");
+        Directory.CreateDirectory(dataDirectory);
+
+        const string PlanFileName = "active.zplan";
+        string planPath = Path.Combine(dataDirectory, PlanFileName);
+        PlanWriter.WriteExecutionFile(plan, planPath, worldPath);
+
+        string configPath = Path.Combine(dataDirectory, "run.cfg");
+        string[] config =
+        [
+            "# 炸带运行时配置。游戏里读到 enabled=1 就开始接管，改成 0 就停，不用重启游戏。",
+            "# 本文件由 `zhaodai arm` 或者管理器界面写出。",
+            "enabled=" + (options.Go ? "1" : "0"),
+            "plan=" + PlanFileName,
+            "allowExplosives=" + (options.AllowExplosives ? "1" : "0"),
+            "maxDeaths=30",
+            "hostileDistance=14",
+        ];
+        File.WriteAllLines(configPath, config, new UTF8Encoding(false));
+
+        Console.WriteLine(string.Format(
+            CultureInfo.InvariantCulture,
+            "已写出施工文件：{0}（{1} 发雷管，引信 {2} tick，撤离 {3} 格）",
+            planPath,
+            plan.Charges.Count,
+            plan.Options.DynamiteFuseTicks,
+            plan.Options.BlastRadius + plan.Options.RetreatMarginTiles));
+        Console.WriteLine("已写出运行配置：" + configPath + "（enabled=" + (options.Go ? "1" : "0") + "）");
+        Console.WriteLine();
+        Console.WriteLine("接下来：");
+        Console.WriteLine("  1. 用 zhaodai-patcher install 把接管插件装进游戏（装之前会自动备份 Terraria.exe）。");
+        Console.WriteLine("  2. 进游戏读档；要开始就把 run.cfg 里的 enabled 改成 1（或者现在用 --go 重跑一次）。");
+        Console.WriteLine("  3. 进度写在 " + Path.Combine(dataDirectory, "status.txt") + "，细节在 runtime.log。");
+        Console.WriteLine("  备份没还原之前，随时把 enabled 改成 0 就能交还操作权。");
+        return plan.Summary.AllSectionsSealed ? ExitOk : ExitFailure;
+    }
+
+    /// <summary>
+    /// Finds the game folder. An explicit path wins, then the environment variable, then the usual
+    /// Steam library locations; a candidate only counts if Terraria.exe is actually in it.
+    /// </summary>
+    private static string ResolveGameDirectory(string? explicitPath)
+    {
+        if (!string.IsNullOrWhiteSpace(explicitPath))
+        {
+            return RequireGameDirectory(explicitPath, "--game");
+        }
+
+        string? fromEnvironment = Environment.GetEnvironmentVariable("ZHAODAI_TERRARIA");
+        if (!string.IsNullOrWhiteSpace(fromEnvironment))
+        {
+            return RequireGameDirectory(fromEnvironment, "环境变量 ZHAODAI_TERRARIA");
+        }
+
+        string[] candidates =
+        [
+            @"D:\Program Files (x86)\Steam\steamapps\common\Terraria",
+            @"C:\Program Files (x86)\Steam\steamapps\common\Terraria",
+            @"C:\Program Files\Steam\steamapps\common\Terraria",
+            @"D:\Steam\steamapps\common\Terraria",
+        ];
+
+        foreach (string candidate in candidates)
+        {
+            if (File.Exists(Path.Combine(candidate, "Terraria.exe")))
+            {
+                return candidate;
+            }
+        }
+
+        throw new ArgumentException(
+            "找不到泰拉瑞亚目录。用 --game=<目录> 指定，或用环境变量 ZHAODAI_TERRARIA，目录里要有 Terraria.exe。");
+    }
+
+    private static string RequireGameDirectory(string path, string source)
+    {
+        string directory = File.Exists(path) && Path.GetFileName(path).Equals("Terraria.exe", StringComparison.OrdinalIgnoreCase)
+            ? Path.GetDirectoryName(Path.GetFullPath(path))!
+            : Path.GetFullPath(path);
+
+        if (!File.Exists(Path.Combine(directory, "Terraria.exe")))
+        {
+            throw new ArgumentException($"{source} 指向的目录里没有 Terraria.exe：{directory}");
+        }
+
+        return directory;
+    }
+
     private static void PrintHelp()
     {
         Console.WriteLine(
@@ -138,6 +265,7 @@ internal static class Program
 
             用法：
               zhaodai plan <world.wld> [选项]   读档并算出雷管施工方案
+              zhaodai arm  <world.wld> [选项]   算方案并把施工文件与运行配置放进游戏目录
               zhaodai info <world.wld>          只读打印存档与感染源概况
 
             选项：
@@ -153,9 +281,17 @@ internal static class Program
                                    额外把一块矩形当作感染源（可重复），
                                    用于把分析器给出的肉前 V 臂预测范围也封进去
 
+            arm 专有选项：
+              --game=<目录>        泰拉瑞亚目录（里面有 Terraria.exe）。
+                                   不写就先看环境变量 ZHAODAI_TERRARIA，再找常见 Steam 路径。
+              --go                 写出配置时直接 enabled=1；默认是 0，需要你手动开
+              --allow-explosives   允许爆破范围里有炸弹桶/爆炸物（默认跳过这类雷管）
+              --force              即使有段没过泛洪复核也照样写出施工文件（默认拒绝）
+
             退出码：0 全部封住，1 用法错误，2 有段未封住或读档失败。
 
-            这个命令只读存档，不修改世界、角色或地图文件。
+            这个命令只读存档，不修改世界、角色或地图文件；arm 只往游戏目录里写
+            ZhaDai\active.zplan 和 ZhaDai\run.cfg，不会改 Terraria.exe。
             """);
     }
 
@@ -168,6 +304,14 @@ internal static class Program
         public List<string> HtmlPaths { get; } = [];
 
         public string? ExecutionPath { get; private set; }
+
+        public string? GameDirectory { get; private set; }
+
+        public bool Go { get; private set; }
+
+        public bool AllowExplosives { get; private set; }
+
+        public bool Force { get; private set; }
 
         public int Clearance { get; private set; } = 6;
 
@@ -204,6 +348,18 @@ internal static class Program
                         break;
                     case "zplan":
                         options.ExecutionPath = Require(name, value);
+                        break;
+                    case "game":
+                        options.GameDirectory = Require(name, value);
+                        break;
+                    case "go":
+                        options.Go = true;
+                        break;
+                    case "allow-explosives":
+                        options.AllowExplosives = true;
+                        break;
+                    case "force":
+                        options.Force = true;
                         break;
                     case "clearance":
                         options.Clearance = ParseInt(name, value);
