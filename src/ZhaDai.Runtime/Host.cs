@@ -49,7 +49,14 @@ namespace ZhaDai.Runtime
         /// <summary>Key name from run.cfg that starts and stops the run, e.g. F10.</summary>
         private static string hotkey = "F10";
 
-        private static bool hostKeyDownLastFrame;
+        /// <summary>True when the key has been released since the last toggle, so one press is one toggle.</summary>
+        private static bool hostKeyArmed = true;
+
+        /// <summary>Tick of the last toggle; a press inside this window is treated as the same press.</summary>
+        private static long lastHotkeyToggleTick;
+
+        /// <summary>Debounce window for the hotkey, in ticks (60 ticks is about a second).</summary>
+        private const int HotkeyDebounceTicks = 20;
 
         /// <summary>True once run.cfg has supplied a hotkey; from then on the key owns the on/off switch.</summary>
         private static bool hotkeyConfigured;
@@ -90,19 +97,31 @@ namespace ZhaDai.Runtime
                     // The hotkey is what actually starts a run when the player is driving: the config only
                     // loads the plan, and a key press in game flips the switch. Toggling with one key keeps
                     // the player in control: press again and the executor stops where it stands.
+                    //
+                    // Re-arming needs a release *and* a short pause. The first real-machine run logged four
+                    // toggles inside one second from a single press, because the game's key state flickers
+                    // across frames; without both guards one tap can start and stop the run in the same
+                    // breath, which looks exactly like a dead key.
                     bool hotkeyDown = HotkeyDown();
-                    if (hotkeyDown && !hostKeyDownLastFrame)
+                    if (!hotkeyDown)
                     {
+                        hostKeyArmed = true;
+                    }
+                    else if (hostKeyArmed && bridge.Tick - lastHotkeyToggleTick >= HotkeyDebounceTicks)
+                    {
+                        hostKeyArmed = false;
+                        lastHotkeyToggleTick = bridge.Tick;
                         ToggleByHotkey();
                     }
-
-                    hostKeyDownLastFrame = hotkeyDown;
 
                     if (bridge.Tick - lastPoll >= PollIntervalFrames)
                     {
                         lastPoll = bridge.Tick;
                         Poll();
                     }
+
+                    // Every frame, not only when run.cfg changes: a key press never touches the file.
+                    SyncExecutor();
 
                     if (enabled && executor != null)
                     {
@@ -187,10 +206,10 @@ namespace ZhaDai.Runtime
         /// <summary>One key flips the run on and off, so the player keeps the switch in game.</summary>
         private static void ToggleByHotkey()
         {
-            // Read the config once here so a key press works even if it lands before the first poll: the
-            // plan has to be loaded before the executor can be built.
+            // Mark the config's own enabled= as spent so a later file change cannot fight the key. The
+            // executor itself is built by SyncExecutor on this same frame: calling Poll() from here did
+            // nothing at all, because the file had not changed and Poll only reacts to changes.
             configEnabledApplied = true;
-            Poll();
 
             if (enabled)
             {
@@ -375,29 +394,53 @@ namespace ZhaDai.Runtime
                 ReportKeyChannel();
             }
 
-            if (enabled && plan == null)
-            {
-                Log("run.cfg 要求开始，但没有可用的施工文件，保持待命。");
-                enabled = false;
-            }
+        }
 
-            if (enabled && executor == null)
+        /// <summary>
+        /// Brings the live executor in line with <c>enabled</c>, every frame.
+        ///
+        /// This used to sit inside <see cref="Poll"/>, which only does anything when run.cfg changes. The
+        /// hotkey flips <c>enabled</c> without touching the file, so the first real-machine run logged
+        /// "开始接管" while no executor was ever built -- status.txt had no state field at all and the key
+        /// looked dead even though it had been read correctly.
+        /// </summary>
+        private static void SyncExecutor()
+        {
+            if (!enabled)
             {
-                ExecutorOptions options = new ExecutorOptions
+                if (executor != null)
                 {
-                    AllowExplosives = allowExplosives,
-                    MaxDeaths = maxDeaths,
-                    HostileSafeDistance = hostileDistance,
-                };
+                    executor.Stop();
+                    executor = null;
+                    Log("已停止接管，游戏交还给你。");
+                    FlushStatus();
+                }
 
-                executor = new BlastExecutor(plan, options);
-                Log("开始接管，施工文件 " + planPath + "，共 " + plan.Charges.Count + " 发雷管。");
+                return;
             }
-            else if (!enabled && executor != null)
+
+            if (plan == null)
             {
-                executor.Stop();
-                Log("收到停止指令。");
+                Log("要求开始，但没有可用的施工文件，保持待命。");
+                enabled = false;
+                return;
             }
+
+            if (executor != null)
+            {
+                return;
+            }
+
+            ExecutorOptions options = new ExecutorOptions
+            {
+                AllowExplosives = allowExplosives,
+                MaxDeaths = maxDeaths,
+                HostileSafeDistance = hostileDistance,
+            };
+
+            executor = new BlastExecutor(plan, options);
+            Log("开始接管，施工文件 " + planPath + "，共 " + plan.Charges.Count + " 发雷管。");
+            FlushStatus();
         }
 
         private static void OpenPlan(string value)
