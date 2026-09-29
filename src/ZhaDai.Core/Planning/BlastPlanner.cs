@@ -86,6 +86,8 @@ public static class BlastPlanner
         byte[] covered = new byte[tileCount];
         List<int> coveredTouched = [];
         byte[] coverCount = new byte[tileCount];
+        int[] scoreMap = new int[tileCount];
+        List<int> scoreTouched = [];
         List<int> coverTouched = [];
         byte[] blastMark = new byte[tileCount];
         List<int> blastTouched = [];
@@ -93,6 +95,7 @@ public static class BlastPlanner
 
         // What a charge would break beyond the fence: 0 harmless, 1 crafted block, 2 structure.
         byte[] collateral = BuildCollateralMap(tiles, opts.ProtectionBuffer);
+        byte[] protectionReach = BuildProtectionReach(collateral, blastOffsets, tiles.Width, tiles.Height);
 
         List<FenceSection> sections = [];
         List<BlastCharge> charges = [];
@@ -157,7 +160,8 @@ public static class BlastPlanner
                         bool belowAir = below < tileCount && !tiles.ActiveAt(below);
                         bool belowWillClear = below < tileCount &&
                             model.NodeMask[below] != 0 &&
-                            workspace.DistanceAt(below) <= opts.Clearance;
+                            workspace.DistanceAt(below) <= opts.Clearance &&
+                            workspace.DistanceAt(below) > opts.Clearance - opts.FenceThickness;
                         if (below < tileCount && (belowAir || belowWillClear))
                         {
                             vineAnchors++;
@@ -201,7 +205,10 @@ public static class BlastPlanner
                         continue;
                     }
 
-                    if (distance > opts.Clearance || fence[index] != 0)
+                    // The cut is the outer ring, not the whole ball: everything inside it is either infected
+                    // already or sits behind the ring, and the flood check only ever needed the ring closed.
+                    int ringInner = opts.Clearance - opts.FenceThickness;
+                    if (distance > opts.Clearance || distance <= ringInner || fence[index] != 0)
                     {
                         continue;
                     }
@@ -292,6 +299,9 @@ public static class BlastPlanner
                 coveredTouched,
                 coverCount,
                 coverTouched,
+                scoreMap,
+                scoreTouched,
+                protectionReach,
                 blastOffsets,
                 collateral,
                 model,
@@ -784,6 +794,67 @@ public static class BlastPlanner
 
     private static int OffsetY(int packed) => (short)((packed >> 16) & 0xFFFF);
 
+    /// <summary>How many best-scoring positions get their protection cost checked each round.</summary>
+    private const int TopCandidates = 8;
+
+    /// <summary>Clears only the entries a round touched, so the score map never needs a full wipe.</summary>
+    private static void ResetScores(int[] scoreMap, List<int> touched)
+    {
+        for (int i = 0; i < touched.Count; i++)
+        {
+            scoreMap[touched[i]] = 0;
+        }
+
+        touched.Clear();
+    }
+
+    /// <summary>True when a blast centred on a tile with this reach mask would not touch what must be kept.</summary>
+    private static bool ProtectionAllows(byte reach, ProtectionLevel level)
+    {
+        if (level == ProtectionLevel.None)
+        {
+            return true;
+        }
+
+        return level == ProtectionLevel.Structures ? (reach & 2) == 0 : reach == 0;
+    }
+
+    /// <summary>
+    /// One byte per tile saying whether a protected tile sits within blast radius: bit 1 for a player built
+    /// block, bit 2 for a structure. Walking each candidate's disc to find that out was the expensive part of
+    /// choosing a placement, and this turns it into a byte test.
+    /// </summary>
+    private static byte[] BuildProtectionReach(byte[] collateral, int[] blastOffsets, int width, int height)
+    {
+        byte[] reach = new byte[collateral.Length];
+        for (int y = 0; y < height; y++)
+        {
+            for (int x = 0; x < width; x++)
+            {
+                byte value = collateral[(y * width) + x];
+                if (value == 0)
+                {
+                    continue;
+                }
+
+                byte bit = value == 1 ? (byte)1 : (byte)2;
+                foreach (int offset in blastOffsets)
+                {
+                    int nx = x + OffsetX(offset);
+                    int ny = y + OffsetY(offset);
+                    if ((uint)nx >= (uint)width || (uint)ny >= (uint)height)
+                    {
+                        continue;
+                    }
+
+                    reach[(ny * width) + nx] |= bit;
+                }
+            }
+        }
+
+        return reach;
+    }
+
     private static List<BlastCharge> PlaceCharges(
         SeedCluster cluster,
         byte[] fence,
@@ -791,6 +862,9 @@ public static class BlastPlanner
         List<int> coveredTouched,
         byte[] coverCount,
         List<int> coverTouched,
+        int[] scoreMap,
+        List<int> scoreTouched,
+        byte[] protectionReach,
         int[] blastOffsets,
         byte[] collateral,
         InfectionModel model,
@@ -804,95 +878,190 @@ public static class BlastPlanner
         int width = tiles.Width;
         int height = tiles.Height;
 
-        for (int y = workRegion.MinY; y <= workRegion.MaxY; y++)
+                // The old loop walked the region row by row and only optimised inside a small window around the first
+        // uncovered tile it met, so a long band came out as a chain of charges that each bought a sliver of
+        // it. This stamps the reach of every still-uncovered band tile onto its candidate positions and takes
+        // the position that covers the most of them, then repeats -- the standard greedy for a covering
+        // problem. On the real world that is the difference between most of the blast being wasted on tiles
+        // nobody asked about and a charge paying for tens of band tiles.
+        List<int> remaining = [];
+        int[] topIndex = new int[TopCandidates];
+        int[] topScore = new int[TopCandidates];
+        long[] topDistance = new long[TopCandidates];
+
+        while (true)
         {
-            int row = y * width;
-            for (int x = workRegion.MinX; x <= workRegion.MaxX; x++)
+            remaining.Clear();
+            for (int y = workRegion.MinY; y <= workRegion.MaxY; y++)
             {
-                int index = row + x;
-                if (fence[index] == 0 || covered[index] != 0)
+                int row = y * width;
+                for (int x = workRegion.MinX; x <= workRegion.MaxX; x++)
                 {
-                    continue;
-                }
-
-                // The first uncovered band tile only picks the neighbourhood to work in. Detonating
-                // exactly on it wastes most of the disc: a band tile sits on the band's edge, so the
-                // charge spends half its radius on the infection side. Searching the surrounding
-                // window for the position that clears the most still-uncovered band tiles is what
-                // turns a band into a few large bites instead of one charge per few tiles.
-                (int bestX, int bestY, int structures, int playerBlocks, bool found, int coveredTiles) = FindBestPlacement(
-                    x,
-                    y,
-                    fence,
-                    covered,
-                    blastOffsets,
-                    collateral,
-                    width,
-                    height,
-                    opts.BlastRadius,
-                    opts.Protection);
-
-                bool refuse = !found ||
-                    (opts.Protection == ProtectionLevel.Strict && (structures > 0 || playerBlocks > 0)) ||
-                    (opts.Protection == ProtectionLevel.Structures && structures > 0);
-
-                if (refuse)
-                {
-                    // Either nothing in range clears this tile without wrecking something, or the best
-                    // available placement does wreck something and the caller asked us not to. Both
-                    // answers are the same: the pickaxe takes these tiles instead of dynamite. Digging
-                    // costs time, blasting costs somebody's house, and time is the cheaper currency.
-                    foreach (int offset in blastOffsets)
+                    int index = row + x;
+                    if (fence[index] != 0 && covered[index] == 0)
                     {
-                        int nx = bestX + OffsetX(offset);
-                        int ny = bestY + OffsetY(offset);
-                        if ((uint)nx >= (uint)width || (uint)ny >= (uint)height)
-                        {
-                            continue;
-                        }
-
-                        int neighbour = (ny * width) + nx;
-                        if (fence[neighbour] == 0 || covered[neighbour] != 0)
-                        {
-                            continue;
-                        }
-
-                        covered[neighbour] = 1;
-                        coveredTouched.Add(neighbour);
-                        RegisterDig(tiles, neighbour, nx, ny, opts.PickPower, DigReason.Collateral, totals);
+                        remaining.Add(index);
                     }
-
-                    continue;
                 }
+            }
 
-                placed.Add((bestX, bestY));
-                totals.BlastTileHits += blastOffsets.Length;
-                totals.RecordPlacementScore(coveredTiles);
-                placementDamage[(bestX, bestY)] = (structures, playerBlocks);
-                if (structures > 0 || playerBlocks > 0)
-                {
-                    totals.ChargesWithCollateral++;
-                    totals.ProtectedInBlast += structures;
-                    totals.PlayerBlocksInBlast += playerBlocks;
-                }
+            if (remaining.Count == 0)
+            {
+                break;
+            }
 
-                // Walls are counted separately from the dilated protection map, so the number reported is
-                // the real count of somebody's wall tiles inside the blast rather than a buffer estimate.
+            foreach (int tile in remaining)
+            {
+                int tileX = tile % width;
+                int tileY = tile / width;
                 foreach (int offset in blastOffsets)
                 {
-                    int wx = bestX + OffsetX(offset);
-                    int wy = bestY + OffsetY(offset);
-                    if ((uint)wx >= (uint)width || (uint)wy >= (uint)height)
+                    int nx = tileX + OffsetX(offset);
+                    int ny = tileY + OffsetY(offset);
+                    if ((uint)nx >= (uint)width || (uint)ny >= (uint)height)
                     {
                         continue;
                     }
 
-                    if (tiles.HasBuiltWallAt((wy * width) + wx))
+                    int candidate = (ny * width) + nx;
+                    if (scoreMap[candidate] == 0)
                     {
-                        totals.BuiltWallsInBlast++;
+                        scoreTouched.Add(candidate);
                     }
+
+                    scoreMap[candidate]++;
+                }
+            }
+
+            // Choose the best position the protection rules actually allow. The mask holds "a protected tile
+            // is within blast radius of here", so the test costs one byte instead of a dilation per round --
+            // which is what lets every candidate be considered rather than the top handful. Keeping only the
+            // top handful was how the first version of this loop turned 4 dig tiles into 1,027: the widest
+            // blasts sit in exactly the places worth protecting, and the cheap runner-up never got a look.
+            for (int slot = 0; slot < TopCandidates; slot++)
+            {
+                topIndex[slot] = -1;
+                topScore[slot] = 0;
+                topDistance[slot] = long.MaxValue;
+            }
+
+            long centroidX = 0;
+            long centroidY = 0;
+            foreach (int tile in remaining)
+            {
+                centroidX += tile % width;
+                centroidY += tile / width;
+            }
+
+            centroidX /= remaining.Count;
+            centroidY /= remaining.Count;
+
+            int refusedIndex = -1;
+            int refusedScore = 0;
+
+            foreach (int candidate in scoreTouched)
+            {
+                int score = scoreMap[candidate];
+                if (score > refusedScore)
+                {
+                    refusedIndex = candidate;
+                    refusedScore = score;
                 }
 
+                if (!ProtectionAllows(protectionReach[candidate], opts.Protection))
+                {
+                    continue;
+                }
+
+                if (score <= topScore[TopCandidates - 1])
+                {
+                    continue;
+                }
+
+                // Nearer the middle of what is left wins ties, which keeps charges marching along the band
+                // instead of clustering wherever the scan happens to start.
+                int cx = candidate % width;
+                int cy = candidate / width;
+                long dx = cx - centroidX;
+                long dy = cy - centroidY;
+                long distance = (dx * dx) + (dy * dy);
+
+                int position = TopCandidates - 1;
+                while (position > 0 &&
+                    (topScore[position - 1] < score ||
+                        (topScore[position - 1] == score && topDistance[position - 1] > distance)))
+                {
+                    topIndex[position] = topIndex[position - 1];
+                    topScore[position] = topScore[position - 1];
+                    topDistance[position] = topDistance[position - 1];
+                    position--;
+                }
+
+                topIndex[position] = candidate;
+                topScore[position] = score;
+                topDistance[position] = distance;
+            }
+
+            ResetScores(scoreMap, scoreTouched);
+
+            bool allowed = topIndex[0] >= 0;
+            int bestX;
+            int bestY;
+            int bestCovered;
+
+            if (allowed)
+            {
+                bestX = topIndex[0] % width;
+                bestY = topIndex[0] / width;
+                bestCovered = topScore[0];
+            }
+            else if (refusedIndex >= 0)
+            {
+                bestX = refusedIndex % width;
+                bestY = refusedIndex / width;
+                bestCovered = 0;
+            }
+            else
+            {
+                bestX = remaining[0] % width;
+                bestY = remaining[0] / width;
+                bestCovered = 0;
+            }
+
+            // The exact collateral counts are only needed for the charge that actually gets placed, so this is
+            // the one place the disc still has to be walked for them.
+            int bestStructures = 0;
+            int bestPlayerBlocks = 0;
+            if (allowed)
+            {
+                foreach (int offset in blastOffsets)
+                {
+                    int nx = bestX + OffsetX(offset);
+                    int ny = bestY + OffsetY(offset);
+                    if ((uint)nx >= (uint)width || (uint)ny >= (uint)height)
+                    {
+                        continue;
+                    }
+
+                    switch (collateral[(ny * width) + nx])
+                    {
+                        case 2:
+                            bestStructures++;
+                            break;
+                        case 1:
+                            bestPlayerBlocks++;
+                            break;
+                    }
+                }
+            }
+
+            if (!allowed)
+            {
+                // Either nothing in range clears this tile without wrecking something, or the best available
+                // placement does wreck something and the caller asked us not to. Both answers are the same:
+                // the pickaxe takes these tiles instead of dynamite. Digging costs time, blasting costs
+                // somebody's house, and time is the cheaper currency.
+                bool dug = false;
                 foreach (int offset in blastOffsets)
                 {
                     int nx = bestX + OffsetX(offset);
@@ -910,11 +1079,82 @@ public static class BlastPlanner
 
                     covered[neighbour] = 1;
                     coveredTouched.Add(neighbour);
+                    RegisterDig(tiles, neighbour, nx, ny, opts.PickPower, DigReason.Collateral, totals);
+                    dug = true;
                 }
+
+                if (!dug)
+                {
+                    // The refused position had nothing left to take either; mark a tile so the loop still
+                    // makes progress instead of spinning on it.
+                    int index = (bestY * width) + bestX;
+                    if (fence[index] != 0 && covered[index] == 0)
+                    {
+                        covered[index] = 1;
+                        coveredTouched.Add(index);
+                        RegisterDig(tiles, index, bestX, bestY, opts.PickPower, DigReason.Collateral, totals);
+                    }
+                    else if (remaining.Count > 0)
+                    {
+                        int fallback = remaining[0];
+                        covered[fallback] = 1;
+                        coveredTouched.Add(fallback);
+                        RegisterDig(tiles, fallback, fallback % width, fallback / width, opts.PickPower, DigReason.Collateral, totals);
+                    }
+                }
+
+                continue;
+            }
+
+            placed.Add((bestX, bestY));
+            totals.BlastTileHits += blastOffsets.Length;
+            totals.RecordPlacementScore(bestCovered);
+            placementDamage[(bestX, bestY)] = (bestStructures, bestPlayerBlocks);
+            if (bestStructures > 0 || bestPlayerBlocks > 0)
+            {
+                totals.ChargesWithCollateral++;
+                totals.ProtectedInBlast += bestStructures;
+                totals.PlayerBlocksInBlast += bestPlayerBlocks;
+            }
+
+            // Walls are counted separately from the dilated protection map, so the number reported is the
+            // real count of somebody's wall tiles inside the blast rather than a buffer estimate.
+            foreach (int offset in blastOffsets)
+            {
+                int wx = bestX + OffsetX(offset);
+                int wy = bestY + OffsetY(offset);
+                if ((uint)wx >= (uint)width || (uint)wy >= (uint)height)
+                {
+                    continue;
+                }
+
+                if (tiles.HasBuiltWallAt((wy * width) + wx))
+                {
+                    totals.BuiltWallsInBlast++;
+                }
+            }
+
+            foreach (int offset in blastOffsets)
+            {
+                int nx = bestX + OffsetX(offset);
+                int ny = bestY + OffsetY(offset);
+                if ((uint)nx >= (uint)width || (uint)ny >= (uint)height)
+                {
+                    continue;
+                }
+
+                int neighbour = (ny * width) + nx;
+                if (fence[neighbour] == 0 || covered[neighbour] != 0)
+                {
+                    continue;
+                }
+
+                covered[neighbour] = 1;
+                coveredTouched.Add(neighbour);
             }
         }
 
-        // Coverage is deliberately NOT reset here. The band mask is shared by every section, and a
+// Coverage is deliberately NOT reset here. The band mask is shared by every section, and a
         // section's work region reaches far past its own front, so a section that cleared the mask would
         // happily pay for the same tile again the next time a neighbouring front scanned past it -- which
         // is how a 25k tile band used to turn into nine thousand charges. Keeping the marks makes each

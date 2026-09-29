@@ -84,6 +84,7 @@ internal static class Program
         BlastPlanOptions planOptions = new()
         {
             Clearance = options.Clearance,
+            FenceThickness = options.FenceThickness,
             MergeLinkDistance = options.MergeLinkDistance,
             MaxSections = options.MaxSections,
             VineReach = options.VineReach,
@@ -157,6 +158,7 @@ internal static class Program
         BlastPlanOptions planOptions = new()
         {
             Clearance = options.Clearance,
+            FenceThickness = options.FenceThickness,
             MergeLinkDistance = options.MergeLinkDistance,
             MaxSections = options.MaxSections,
             VineReach = options.VineReach,
@@ -284,11 +286,13 @@ internal static class Program
               --json=<路径>        写出完整方案 JSON（可重复）
               --html=<路径>        写出自包含交互地图（可重复）
               --zplan=<路径>       写出游戏内施工文件
-              --clearance=<格数>   封带厚度，默认 6（不得小于 4）
+              --clearance=<格数>   隔离带外沿离感染前沿几格，默认 6（不得小于 4）。\n                                    调小贴近前沿能省炸药（实测 4 仍封得住，省 18%），\n                                    但留给施工期间蔓延的余量也小
               --merge-gap=<格数>   多少格以内的感染源并成同一段，默认 3；调大省炸药但封得更多
               --max-sections=<n>   允许的最大段数，默认 4000
               --vine-reach=<格数>  藤蔓能顺着空气向下带多远，默认 13；设 0 只按普通三格扩散封带
               --protect=<级别>     strict（默认，结构物、玩家建材与玩家墙都不炸，改挖）、structures、none
+              --fence-thickness=<格>
+                                    实际切掉几层，默认 3（等于原版传播的 3 格跨度；切薄了会被跳过）
               --protect-buffer=<格> 保护范围外再留几格余量，默认 1（0..3）
               --no-plug            不用封堵块顶掉藤蔓竖井（默认用 1 块木头换掉 13 格竖井）
               --plug-item=<物品id> 封堵用的物品，默认 9（木材）
@@ -331,6 +335,8 @@ internal static class Program
         public bool Force { get; private set; }
 
         public int Clearance { get; private set; } = 6;
+
+        public int FenceThickness { get; private set; } = InfectionModel.SpreadReach;
 
         public int MergeLinkDistance { get; private set; } = InfectionModel.SpreadReach;
 
@@ -407,6 +413,9 @@ internal static class Program
                         break;
                     case "vine-reach":
                         options.VineReach = ParseInt(name, value);
+                        break;
+                    case "fence-thickness":
+                        options.FenceThickness = ParseInt(name, value);
                         break;
                     case "protect":
                         options.Protection = ParseProtection(value);

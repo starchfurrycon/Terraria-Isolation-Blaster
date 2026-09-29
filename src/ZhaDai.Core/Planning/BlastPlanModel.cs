@@ -15,6 +15,14 @@ public sealed record BlastPlanOptions
     /// </summary>
     public int Clearance { get; init; } = 6;
 
+    /// <summary>
+    /// How many of those clearance layers are actually cut, counted inwards from the clean side. The whole
+    /// ball used to be cut, which spent dynamite on the infected side of the front too: those tiles are lost
+    /// already, and all the flood check ever needed was a closed ring outside them. Three layers matches the
+    /// spread's own three tile reach, so nothing can jump the cut.
+    /// </summary>
+    public int FenceThickness { get; init; } = InfectionModel.SpreadReach;
+
     public const int MinimumClearance = InfectionModel.SpreadReach + 1;
 
     /// <summary>
@@ -105,6 +113,15 @@ public sealed record BlastPlanOptions
                 Clearance,
                 $"Clearance must be at least {MinimumClearance}: a thinner band is reachable by the ordinary " +
                 $"{InfectionModel.SpreadReach}-tile spread.");
+        }
+
+        if (FenceThickness < 1 || FenceThickness >= Clearance)
+        {
+            throw new ArgumentOutOfRangeException(
+                nameof(FenceThickness),
+                FenceThickness,
+                $"Fence thickness must be between 1 and {Clearance - 1}: at {Clearance} the ring degenerates " +
+                "into the whole ball minus the front tiles, which is the shape that leaked.");
         }
 
         if (ProtectionBuffer < 0 || ProtectionBuffer > 3)
