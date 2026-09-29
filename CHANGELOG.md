@@ -1,5 +1,21 @@
 # 更新日志
 
+## 0.1.3-alpha（待真机确认后打标签）
+
+**F10 毫无反应：`Keys[] as object[]` 恒为 null**
+
+- 现象：插件正常加载、反射自检通过、施工文件也读到了，但按 F10 什么也不发生，日志里连一行按键记录都没有。
+- 根因：`Host.HotkeyDown()` 用 `...Invoke(state, null) as object[]` 接游戏返回的按键数组。
+  游戏给的是 `Microsoft.Xna.Framework.Input.Keys[]`，`Keys` 是枚举（值类型），**值类型数组永远不能 `as` 成
+  `object[]`**，于是这里恒为 null、`HotkeyDown()` 恒 false。离线成员核对与本地测试都碰不到这条路径。
+  元数据证据：`KeyboardState.GetPressedKeys()` 返回 `Keys[]`，`Keys.IsValueType = True`。
+- 修法：改用 `System.Array` 遍历；新增可测试的 `HotkeyMatch`（`Matches`/`Any`）并补回归测试
+  `HotkeyTests`（含「值类型数组也要能遍历」一条）。
+- 启动自检：`ReportKeyChannel()` 现在会在 `runtime.log` 里明说按键通道是否可读，读不到就提示改用 `enabled=1`，
+  不再出现「按键没反应且无从解释」。
+- 顺带修掉 run.cfg 的顺序陷阱：`enabled=` 写在 `hotkey=` 前面，原来边读边判会把带热键的配置当成没热键，
+  `enabled` 反被每轮覆盖。现在整个文件读完后只生效一次。
+
 ## 0.1.2-alpha
 
 **修掉真机崩溃：插件依赖没跟着装（用真机崩溃日志定位）**
