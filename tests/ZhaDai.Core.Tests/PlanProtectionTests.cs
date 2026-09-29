@@ -40,8 +40,8 @@ internal static class PlanProtectionTests
         int moved = strict.Charges.Count(charge => !unprotected.Contains((charge.X, charge.Y)));
         check(moved > 0, $"严格保护下摆位换了位置去躲开箱子（换位 {moved} 发）");
         check(
-            strict.Charges.Count >= none.Charges.Count,
-            $"保护建筑不会让雷管变少（严格 {strict.Charges.Count} 发 / 不保护 {none.Charges.Count} 发）");
+            strict.Summary.FenceTiles == none.Summary.FenceTiles,
+            $"保护只换摆位、不会少封带格（严格 {strict.Summary.FenceTiles} 格 / 不保护 {none.Summary.FenceTiles} 格）");
 
         // A band tile with crafted wood all around it: every charge that could reach it is inside the
         // wood, so there is no zero-collateral placement left and the tile has to be dug.

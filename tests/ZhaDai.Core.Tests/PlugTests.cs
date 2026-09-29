@@ -30,6 +30,11 @@ internal static class PlugTests
         check(
             plugged.PlugOrders.Count == plugged.Summary.PlugTiles,
             "封堵单数量与汇总一致");
+        foreach (FenceSection section in plugged.Sections.Where(section => !section.SealedByFloodVerification))
+        {
+            Console.WriteLine($"    漏段 {section.Sequence}：源 {section.SeedTiles} 封带 {section.FenceTiles} 盒 {section.Bounds}");
+        }
+
         check(
             plugged.Summary.AllSectionsSealed,
             "用封堵块顶掉竖井后复核依然封住（模型知道封堵块挡住了藤蔓）");
@@ -139,14 +144,21 @@ internal static class PlugTests
         TileGrid tiles = new TileGrid(width, height);
 
         // Sky at the top, stone below the surface line, and a corrupt grass line along the surface: the
-        // grass is both an infection seed and the thing that grows vines, and the stone under it is inside
-        // the band, so the tile below the grass is about to become air -- exactly what a plug is for.
+        // grass is both an infection seed and the thing that grows vines. The stone under most of the line
+        // is only a tile or two down, well inside the ring, so it stays solid and no vine can start there --
+        // that is the ring cut working as intended. Two columns hang over open air instead: those are the
+        // ones a vine can actually run down, and one block each is what stops it.
         const int surface = 40;
         tiles.FillRect(0, surface + 1, width - 1, height - 1, 1);
         for (int x = 0; x < width; x++)
         {
             bool evil = x >= seedX - 30 && x <= seedX + 30;
             tiles.Set(x, surface, evil ? (ushort)23 : (ushort)2, active: true);
+        }
+
+        foreach (int x in new[] { seedX - 12, seedX + 12 })
+        {
+            tiles.Set(x, surface + 1, 0, active: false);
         }
 
         // An ebonstone blob under the surface, so the section has real seeds to fence.

@@ -290,6 +290,16 @@ public static class BlastPlanner
             workspace.Plugged = plugs;
             FloodResult flood = workspace.Flood(cluster.Seeds, fence, workRegion);
             bool isSealed = !flood.Escaped;
+            // A leak is worth a line of its own when the run is being debugged: the visited bounds say which
+            // way the infection got out, which is the difference between "the ring is too thin here" and
+            // "the terrain has a hole nobody accounted for".
+            if (!isSealed && Environment.GetEnvironmentVariable("ZHADAI_DEBUG_LEAK") == "1")
+            {
+                Console.Error.WriteLine(
+                    $"漏段 {cluster.Sequence}：泛洪访问 {flood.VisitedCount} 格，走到 {flood.VisitedBounds}；" +
+                    $"工作区 {workRegion}；段盒 {cluster.Bounds}");
+            }
+
             allSealed &= isSealed;
 
             List<BlastCharge> sectionCharges = PlaceCharges(
