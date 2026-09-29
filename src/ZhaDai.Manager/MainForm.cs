@@ -1,9 +1,8 @@
+using System.ComponentModel;
 using System.Diagnostics;
 using System.Globalization;
-using System.Runtime.InteropServices;
 using System.Text;
 using System.Text.RegularExpressions;
-using Microsoft.Win32;
 using ZhaDai.Core.Planning;
 using ZhaDai.Core.World;
 
@@ -26,11 +25,8 @@ internal sealed partial class MainForm : Form
     private const int HtBottomLeft = 16;
     private const int HtBottomRight = 17;
     private const int ResizeBorder = 7;
-    private const int WmSetRedraw = 0x000B;
 
     private static readonly string[] KnobLabels = ["封带厚度", "合并距离", "藤蔓下探"];
-
-    private static readonly Regex RectPattern = RectRegex();
 
     private readonly Stopwatch _watch = new();
     private readonly System.Windows.Forms.Timer _blink = new() { Interval = 500 };
@@ -38,7 +34,7 @@ internal sealed partial class MainForm : Form
 
     /// <summary>
     /// One invisible helper: the keyboard and IME sink for the numeric fields and the extra seed
-    /// rectangles box. It paints nothing; editing state is drawn by <see cref="Render"/>.
+    /// rectangle list. It paints nothing; the editing state is drawn by <see cref="Render"/>.
     /// </summary>
     private readonly TextBox _editor = new();
 
@@ -60,9 +56,9 @@ internal sealed partial class MainForm : Form
     private bool _editingExtra;
     private bool _extraExpanded;
     private bool _blinkOn = true;
-    private bool _installing;
     private bool _running;
     private bool _lastSealed;
+    private bool _showEmbeddedTooltip;
 
     private string _message = string.Empty;
     private string _planError = string.Empty;
@@ -148,9 +144,6 @@ internal sealed partial class MainForm : Form
 
     protected override void OnPaint(PaintEventArgs e)
     {
-        e.Graphics.SmoothingMode = System.Drawing.Drawing2D.SmoothingMode.AntiAlias;
-        e.Graphics.TextRenderingHint = System.Drawing.Text.TextRenderingHint.ClearTypeGridFit;
-        e.Graphics.PixelOffsetMode = System.Drawing.Drawing2D.PixelOffsetMode.HighQuality;
         e.Graphics.Clear(UiTheme.Canvas);
         Render(e.Graphics);
     }
@@ -161,42 +154,34 @@ internal sealed partial class MainForm : Form
         UpdateLayout();
         UiLayout layout = _layout;
         Point mouse = _mouse;
-        bool onScreen = graphics.ClipBounds.X > -1000f;
-        if (!onScreen && mouse.X >= 0)
+        if (!Visible)
         {
-            // Off screen the mouse position is meaningless: drop the hover highlight.
+            // With no window on screen the recorded mouse position is meaningless: drop the hover
+            // highlights so an off-screen render is deterministic.
             mouse = new Point(-1, -1);
         }
 
         SetHighQuality(graphics);
 
-        using (Region window = UiTheme.WindowRegion(ClientSize.Width, ClientSize.Height))
+        using (SolidBrush canvas = UiTheme.Brush(UiTheme.Canvas))
         {
-            using SolidBrush canvas = UiTheme.Brush(UiTheme.Canvas);
             graphics.FillRectangle(canvas, new Rectangle(0, 0, ClientSize.Width, ClientSize.Height));
-
-            DrawHeader(graphics, layout, mouse);
-
-            using (Region content = new(layout.ResultCard))
-            {
-                using Region card = new(layout.WorldCard);
-                content.Union(card);
-                DrawWorldPicker(graphics, layout, mouse);
-            }
-
-            DrawKnobs(graphics, layout, mouse);
-            DrawResults(graphics, layout);
-            DrawActions(graphics, layout, mouse);
-            DrawGrip(graphics, layout);
-            UiTheme.Border(graphics, layout.Client, UiTheme.Border);
         }
+
+        DrawHeader(graphics, layout, mouse);
+        DrawWorldPicker(graphics, layout, mouse);
+        DrawKnobs(graphics, layout, mouse);
+        DrawResults(graphics, layout);
+        DrawActions(graphics, layout, mouse);
+        UiTheme.Grip(graphics, layout.Grip, UiTheme.Disabled);
+        UiTheme.Border(graphics, layout.Client, UiTheme.Border);
     }
 
     private static void SetHighQuality(Graphics graphics)
     {
         graphics.SmoothingMode = System.Drawing.Drawing2D.SmoothingMode.AntiAlias;
         graphics.TextRenderingHint = System.Drawing.Text.TextRenderingHint.ClearTypeGridFit;
-        graphics.InterpolationMode = System.Drawing.Drawing2D.InterpolationMode.HighQualityBicubic;
+        graphics.PixelOffsetMode = System.Drawing.Drawing2D.PixelOffsetMode.HighQuality;
     }
 
     private void DrawHeader(Graphics graphics, UiLayout layout, Point mouse)
@@ -206,10 +191,10 @@ internal sealed partial class MainForm : Form
             graphics.FillRectangle(fill, layout.Header);
         }
 
-        UiTheme.PenLine(graphics, UiTheme.Border, new Point(0, layout.Header.Bottom - 1), new Point(layout.Header.Right, layout.Header.Bottom - 1));
-        UiTheme.TextLine(graphics, "炸带", UiTheme.Title, UiTheme.Accent, new Rectangle(14, 10, 56, 22), ContentAlignment.MiddleLeft);
-        UiTheme.TextLine(graphics, "隔离带爆破规划器", UiTheme.Body, UiTheme.Text, new Rectangle(56, 10, 180, 22), ContentAlignment.MiddleLeft);
-        UiTheme.TextLine(graphics, "v0.1.0-alpha", UiTheme.Small, UiTheme.Muted, new Rectangle(150, 12, 120, 18), ContentAlignment.MiddleLeft);
+        UiTheme.Rule(graphics, new Rectangle(0, layout.Header.Bottom - 1, layout.Header.Width, 1), UiTheme.Border);
+        UiTheme.TextLine(graphics, "炸带", UiTheme.Title, UiTheme.Accent, new Rectangle(14, 10, 52, 22), ContentAlignment.MiddleLeft);
+        UiTheme.TextLine(graphics, "隔离带爆破规划器", UiTheme.Body, UiTheme.Text, new Rectangle(54, 10, 130, 22), ContentAlignment.MiddleLeft);
+        UiTheme.TextLine(graphics, "v0.1.0-alpha", UiTheme.Small, UiTheme.Muted, new Rectangle(150, 12, 110, 18), ContentAlignment.MiddleLeft);
 
         int hintRight = layout.MinimiseButton.X - 12;
         UiTheme.TextLine(
@@ -249,7 +234,7 @@ internal sealed partial class MainForm : Form
         {
             UiTheme.TextClipped(
                 graphics,
-                Directory.Exists(_worldDirectory) ? "这个目录里没有 .wld 存档。" : "找不到存档目录：" + _worldDirectory,
+                Directory.Exists(_worldDirectory) ? "这个目录里没有 .wld 存档。" : "找不到存档目录，请点「浏览…」手动选择。",
                 UiTheme.Body,
                 UiTheme.Muted,
                 new Rectangle(list.X + 2, list.Y + 12, list.Width - 4, 22));
@@ -282,21 +267,20 @@ internal sealed partial class MainForm : Form
             }
 
             string name = entry.Title is { Length: > 0 } ? entry.Title : Path.GetFileNameWithoutExtension(entry.FileName);
-            Color nameColor = selected ? UiTheme.Accent : UiTheme.Text;
             Size nameSize = UiTheme.Measure(graphics, name, UiTheme.BodyBold);
-            int nameWidth = Math.Min(nameSize.Width, row.Width - 150);
+            int nameWidth = Math.Clamp(nameSize.Width, 48, Math.Max(48, row.Width / 2));
             UiTheme.TextClipped(
                 graphics,
                 name,
                 UiTheme.BodyBold,
-                nameColor,
-                new Rectangle(row.X + 8, row.Y + 3, Math.Max(40, nameWidth), 14));
+                selected ? UiTheme.Accent : UiTheme.Text,
+                new Rectangle(row.X + 8, row.Y + 3, nameWidth, 14));
             UiTheme.TextClipped(
                 graphics,
                 entry.FileName,
                 UiTheme.Small,
                 UiTheme.Muted,
-                new Rectangle(row.X + 10 + Math.Max(40, nameWidth), row.Y + 4, Math.Max(20, row.Width - nameWidth - 150), 13));
+                new Rectangle(row.X + 12 + nameWidth, row.Y + 4, Math.Max(20, row.Right - row.X - nameWidth - 130), 13));
             UiTheme.TextLine(
                 graphics,
                 WorldCatalog.FormatSize(entry.Size),
@@ -328,15 +312,19 @@ internal sealed partial class MainForm : Form
     private void DrawKnobs(Graphics graphics, UiLayout layout, Point mouse)
     {
         UiTheme.Frame(graphics, layout.KnobCard, UiTheme.Surface, UiTheme.Border);
-        UiTheme.SectionLabel(graphics, "参数（留空用默认值）", layout.KnobTitleRow);
+        UiTheme.SectionLabel(graphics, "参数（都是可选的）", layout.KnobTitleRow);
 
-        DrawStepper(graphics, layout, 0, "封带厚度", _clearance.ToString(CultureInfo.InvariantCulture), "格 · 最小 4", mouse);
-        DrawStepper(graphics, layout, 1, "合并距离", _mergeLinkDistance.ToString(CultureInfo.InvariantCulture), "格 · 越大越省炸药", mouse);
-        DrawStepper(graphics, layout, 2, "藤蔓下探", _vineReach.ToString(CultureInfo.InvariantCulture), "格 · 0 = 不考虑藤蔓", mouse);
+        DrawStepper(graphics, layout, 0, "封带厚度", _clearance.ToString(CultureInfo.InvariantCulture), "最小 4", mouse);
+        DrawStepper(graphics, layout, 1, "合并距离", _mergeLinkDistance.ToString(CultureInfo.InvariantCulture), "越大越省", mouse);
+        DrawStepper(graphics, layout, 2, "藤蔓下探", _vineReach.ToString(CultureInfo.InvariantCulture), "0 = 关", mouse);
 
         UiTheme.Frame(graphics, layout.ExtraCard, UiTheme.Canvas, UiTheme.Border);
         bool hover = layout.ExtraTitleRow.Contains(mouse);
-        UiTheme.Marker(graphics, new Rectangle(layout.ExtraTitleRow.X, layout.ExtraTitleRow.Y + 4, 10, 10), hover ? UiTheme.Accent : UiTheme.Muted, _extraExpanded);
+        UiTheme.Marker(
+            graphics,
+            new Rectangle(layout.ExtraTitleRow.X, layout.ExtraTitleRow.Y + 4, 10, 10),
+            hover ? UiTheme.Accent : UiTheme.Muted,
+            _extraExpanded);
         UiTheme.TextLine(
             graphics,
             "额外预测区 x0,y0,x1,y1",
@@ -349,7 +337,7 @@ internal sealed partial class MainForm : Form
             graphics,
             parsedCount > 0
                 ? string.Format(CultureInfo.InvariantCulture, "{0} 条 · 每行一条", parsedCount)
-                : "每行一条 · 可折叠",
+                : "每行一条",
             UiTheme.Small,
             UiTheme.Muted,
             new Rectangle(layout.ExtraTitleRow.Right - 140, layout.ExtraTitleRow.Y, 140, layout.ExtraTitleRow.Height),
@@ -363,8 +351,9 @@ internal sealed partial class MainForm : Form
         Rectangle field = layout.ExtraField;
         bool editing = _editingExtra;
         UiTheme.Frame(graphics, field, editing ? UiTheme.AccentSoft : UiTheme.Surface, editing ? UiTheme.Accent : UiTheme.Border);
-        string text = _extraRectsText.Length == 0 && !editing ? "x0,y0,x1,y1" : _extraRectsText;
-        Color color = _extraRectsText.Length == 0 && !editing ? UiTheme.Disabled : UiTheme.Text;
+        bool placeholder = _extraRectsText.Length == 0 && !editing;
+        string text = placeholder ? "x0,y0,x1,y1" : _extraRectsText;
+        Color color = placeholder ? UiTheme.Disabled : UiTheme.Text;
         string[] lines = text.Replace("\r\n", "\n", StringComparison.Ordinal).Split('\n');
         int y = field.Y + 4;
         foreach (string line in lines)
@@ -378,9 +367,9 @@ internal sealed partial class MainForm : Form
             y += 15;
         }
 
-        if (editing && _blinkOn)
+        if (editing && _blinkOn && !placeholder)
         {
-            string last = lines.Length == 0 ? string.Empty : lines[^1];
+            string last = lines[^1];
             int width = UiTheme.MeasureWidth(graphics, last, UiTheme.Body);
             int caretX = Math.Min(field.Right - 5, field.X + 5 + width + 1);
             int caretY = field.Y + 4 + (Math.Max(0, lines.Length - 1) * 15);
@@ -399,84 +388,75 @@ internal sealed partial class MainForm : Form
         }
 
         Rectangle row = layout.KnobRows[index];
-        UiTheme.TextClipped(graphics, label, UiTheme.Body, UiTheme.Text, new Rectangle(row.X, row.Y, 84, row.Height));
+        UiTheme.TextClipped(graphics, label, UiTheme.Body, UiTheme.Text, new Rectangle(row.X, row.Y, 72, row.Height));
         UiTheme.TextClipped(
             graphics,
             hint,
             UiTheme.Small,
             UiTheme.Disabled,
-            new Rectangle(row.X + 78, row.Y, Math.Max(10, layout.KnobMinus[index].X - row.X - 84), row.Height));
+            new Rectangle(row.X + 68, row.Y, Math.Max(10, layout.KnobMinus[index].X - row.X - 74), row.Height));
 
         bool fieldEditing = _editingKnob == index;
-        DrawStepperPart(graphics, layout.KnobMinus[index], "−", layout.KnobMinus[index].Contains(mouse), false);
-        DrawStepperPart(graphics, layout.KnobPlus[index], "+", layout.KnobPlus[index].Contains(mouse), false);
+        DrawStepperPart(graphics, layout.KnobMinus[index], "−", layout.KnobMinus[index].Contains(mouse), active: false);
+        DrawStepperPart(graphics, layout.KnobPlus[index], "+", layout.KnobPlus[index].Contains(mouse), active: false);
         DrawStepperPart(graphics, layout.KnobField[index], value, layout.KnobField[index].Contains(mouse), fieldEditing);
 
         if (fieldEditing && _blinkOn)
         {
             Rectangle field = layout.KnobField[index];
             int width = UiTheme.MeasureWidth(graphics, value, UiTheme.BodyBold);
-            int caretX = field.X + ((field.Width - width) / 2) + width + 1;
-            if (caretX > field.Right - 4)
-            {
-                caretX = field.Right - 4;
-            }
-
-            UiTheme.PenLine(
-                graphics,
-                UiTheme.Text,
-                new Point(caretX, field.Y + 4),
-                new Point(caretX, field.Bottom - 5));
+            int caretX = Math.Min(field.Right - 4, field.X + ((field.Width - width) / 2) + width + 1);
+            UiTheme.PenLine(graphics, UiTheme.Text, new Point(caretX, field.Y + 4), new Point(caretX, field.Bottom - 5));
         }
     }
 
     private static void DrawStepperPart(Graphics graphics, Rectangle bounds, string text, bool hover, bool active)
     {
         Color fill = active ? UiTheme.AccentSoft : hover ? UiTheme.Subtle : UiTheme.Surface;
-        Color border = active ? UiTheme.Accent : hover ? UiTheme.Accent : UiTheme.Border;
+        Color border = active || hover ? UiTheme.Accent : UiTheme.Border;
+        Color color = active ? UiTheme.Accent : UiTheme.Text;
         UiTheme.Frame(graphics, bounds, fill, border);
-        Font font = text is "−" or "+" ? UiTheme.BodyBold : UiTheme.BodyBold;
-        UiTheme.TextLine(graphics, text, font, active ? UiTheme.Accent : UiTheme.Text, bounds, ContentAlignment.MiddleCenter);
+        UiTheme.TextLine(graphics, text, UiTheme.BodyBold, color, bounds, ContentAlignment.MiddleCenter);
     }
 
     private void DrawResults(Graphics graphics, UiLayout layout)
     {
         UiTheme.Frame(graphics, layout.ResultCard, UiTheme.Surface, UiTheme.Border);
-        bool hasPlan = _presentation is not null;
         UiTheme.TextLine(graphics, "规划结果", UiTheme.SmallBold, UiTheme.Muted, layout.ResultTitleRow, ContentAlignment.MiddleLeft);
 
-        if (!hasPlan)
+        if (_presentation is null)
         {
+            DrawProgress(graphics, layout);
             UiTheme.TextClipped(
                 graphics,
                 _planError.Length > 0 ? _planError : "还没有规划。选一个存档，然后点「开始规划」。",
                 UiTheme.Body,
                 _planError.Length > 0 ? UiTheme.Danger : UiTheme.Muted,
                 new Rectangle(layout.ResultBody.X, layout.ResultBody.Y + 8, layout.ResultBody.Width, 22));
-            DrawEmptyDiagram(graphics, new Rectangle(layout.ResultBody.X, layout.ResultBody.Y + 40, layout.ResultBody.Width, Math.Max(40, layout.ResultBody.Height - 40)));
+            DrawEmptyDiagram(
+                graphics,
+                new Rectangle(layout.ResultBody.X, layout.ResultBody.Y + 40, layout.ResultBody.Width, Math.Max(40, layout.ResultBody.Height - 40)));
             return;
         }
 
-        PlanPresentation plan = _presentation!;
-        DrawProgress(graphics, layout, complete: true);
+        PlanPresentation plan = _presentation;
+        DrawProgress(graphics, layout);
 
         int y = layout.ResultBody.Y;
         IReadOnlyList<string> summary = plan.SummaryLines();
         for (int i = 0; i < summary.Count; i++)
         {
             Rectangle row = new(layout.ResultBody.X, y, layout.ResultBody.Width, 20);
-            bool sealRow = i == 6;
-            Color color = UiTheme.Text;
-            if (sealRow)
+            if (i == 6)
             {
-                color = plan.AllSectionsSealed ? UiTheme.Active : UiTheme.Danger;
-                Rectangle dot = new(row.X, row.Y + 6, 7, 7);
-                UiTheme.Dot(graphics, dot, color);
+                // The flood re-verification verdict is the one line that must never be misread.
+                Color color = plan.AllSectionsSealed ? UiTheme.Active : UiTheme.Danger;
+                UiTheme.Dot(graphics, new Rectangle(row.X, row.Y + 6, 7, 7), color);
                 UiTheme.TextClipped(graphics, summary[i], UiTheme.BodyBold, color, new Rectangle(row.X + 14, row.Y, row.Width - 14, row.Height));
             }
             else
             {
-                UiTheme.TextClipped(graphics, summary[i], UiTheme.Body, color, row);
+                UiTheme.TextClipped(graphics, summary[i], UiTheme.Body, UiTheme.Text, row);
             }
 
             y += 20;
@@ -508,7 +488,7 @@ internal sealed partial class MainForm : Form
         }
     }
 
-    /// <summary>The empty state's placeholder: the band-hugging idea drawn as geometry, no chrome.</summary>
+    /// <summary>The empty state's placeholder: the diagonal-front idea drawn as plain geometry.</summary>
     private static void DrawEmptyDiagram(Graphics graphics, Rectangle box)
     {
         int size = Math.Min(Math.Min(box.Width - 20, box.Height - 20), 150);
@@ -526,25 +506,34 @@ internal sealed partial class MainForm : Form
         UiTheme.Border(graphics, area, UiTheme.Border);
 
         int step = Math.Max(5, size / 14);
-        int offset = Math.Max(10, size / 5);
-        for (int i = 0; i < 8; i++)
+        int offset = Math.Max(8, size / 6);
+        using (SolidBrush evil = UiTheme.Brush(UiTheme.Evil))
+        using (SolidBrush hallow = UiTheme.Brush(UiTheme.Hallow))
         {
-            int x = area.X + offset + (i * step);
-            int y = area.Y + offset + (i * step);
-            using SolidBrush evil = UiTheme.Brush(UiTheme.Evil);
-            graphics.FillRectangle(evil, new Rectangle(x, y, Math.Max(3, step - 1), Math.Max(3, step - 1)));
+            for (int i = 0; i < 7; i++)
+            {
+                int x = area.X + offset + (i * step);
+                int y = area.Y + offset + (i * step);
+                graphics.FillRectangle(evil, new Rectangle(x, y, Math.Max(3, step - 1), Math.Max(3, step - 1)));
+                if (i == 4)
+                {
+                    graphics.FillRectangle(
+                        hallow,
+                        new Rectangle(x - step, y + step, Math.Max(3, step - 1), Math.Max(3, step - 1)));
+                }
+            }
         }
 
         UiTheme.TextLine(
             graphics,
-            "感染源",
+            "感染源 → 封带",
             UiTheme.Small,
             UiTheme.Muted,
-            new Rectangle(area.X, area.Bottom + 4, area.Width, 14),
+            new Rectangle(area.X - 20, area.Bottom + 3, area.Width + 40, 14),
             ContentAlignment.MiddleCenter);
     }
 
-    private void DrawProgress(Graphics graphics, UiLayout layout, bool complete)
+    private void DrawProgress(Graphics graphics, UiLayout layout)
     {
         Rectangle bar = layout.ProgressBar;
         if (bar.Width <= 4)
@@ -557,10 +546,13 @@ internal sealed partial class MainForm : Form
             graphics.FillRectangle(track, bar);
         }
 
-        if (complete || !_running)
+        if (_presentation is not null || !_running)
         {
-            using SolidBrush fill = UiTheme.Brush(_presentation is null ? UiTheme.Border : _presentation.AllSectionsSealed ? UiTheme.Active : UiTheme.Danger);
-            graphics.FillRectangle(fill, bar);
+            Color fill = _presentation is null
+                ? UiTheme.Border
+                : _presentation.AllSectionsSealed ? UiTheme.Active : UiTheme.Danger;
+            using SolidBrush brush = UiTheme.Brush(fill);
+            graphics.FillRectangle(brush, bar);
         }
         else
         {
@@ -572,8 +564,8 @@ internal sealed partial class MainForm : Form
                 x = (travel * 2) - x;
             }
 
-            using SolidBrush fill = UiTheme.Brush(UiTheme.Accent);
-            graphics.FillRectangle(fill, new Rectangle(bar.X + x, bar.Y, width, bar.Height));
+            using SolidBrush brush = UiTheme.Brush(UiTheme.Accent);
+            graphics.FillRectangle(brush, new Rectangle(bar.X + x, bar.Y, width, bar.Height));
         }
 
         UiTheme.Border(graphics, bar, UiTheme.Border);
@@ -589,10 +581,7 @@ internal sealed partial class MainForm : Form
         }
         else if (_running)
         {
-            text = string.Format(
-                CultureInfo.InvariantCulture,
-                "读档并规划中… {0} 秒",
-                _watch.Elapsed.TotalSeconds.ToString("0.0", CultureInfo.InvariantCulture));
+            text = "读档并规划中… " + _watch.Elapsed.TotalSeconds.ToString("0.0", CultureInfo.InvariantCulture) + " 秒 · 窗口仍可拖动";
         }
         else
         {
@@ -606,16 +595,6 @@ internal sealed partial class MainForm : Form
     {
         UiTheme.Frame(graphics, layout.ActionCard, UiTheme.Surface, UiTheme.Border);
         UiTheme.SectionLabel(graphics, "操作", layout.ActionTitleRow);
-        if (_running)
-        {
-            UiTheme.TextLine(
-                graphics,
-                "规划中 · 窗口仍可拖动",
-                UiTheme.Small,
-                UiTheme.Accent,
-                new Rectangle(layout.ActionTitleRow.Right - 160, layout.ActionTitleRow.Y, 160, layout.ActionTitleRow.Height),
-                ContentAlignment.MiddleRight);
-        }
 
         Rectangle[] bounds = ButtonBounds(layout);
         bool ready = _presentation is not null && !_running;
@@ -623,9 +602,9 @@ internal sealed partial class MainForm : Form
         DrawButton(graphics, bounds[1], "打开地图", ready, primary: false, mouse);
         DrawButton(graphics, bounds[2], "导出 JSON", ready, primary: false, mouse);
         DrawButton(graphics, bounds[3], "导出施工文件", ready, primary: false, mouse);
-        DrawButton(graphics, bounds[4], "安装接管插件", _installing, primary: false, mouse);
+        DrawButton(graphics, bounds[4], "安装接管插件", enabled: false, primary: false, mouse);
 
-        if (bounds[4].Contains(mouse) && !_installing)
+        if (_showEmbeddedTooltip && bounds[4].Contains(mouse))
         {
             DrawTooltip(graphics, bounds[4], "接管插件尚未随本版本发布");
         }
@@ -642,16 +621,14 @@ internal sealed partial class MainForm : Form
 
         Color statusColor = _planError.Length > 0
             ? UiTheme.Danger
-            : _lastSealed && ready ? UiTheme.Active : UiTheme.Muted;
+            : ready && _lastSealed ? UiTheme.Active : UiTheme.Muted;
         UiTheme.TextClipped(graphics, status, UiTheme.Small, statusColor, layout.ActionStatusRow);
     }
 
     private static void DrawTooltip(Graphics graphics, Rectangle anchor, string text)
     {
         Size size = UiTheme.Measure(graphics, text, UiTheme.Small);
-        int width = size.Width + 16;
-        int height = Math.Max(20, size.Height + 6);
-        Rectangle box = new(anchor.X, anchor.Bottom + 6, width, height);
+        Rectangle box = new(anchor.X, anchor.Bottom + 6, size.Width + 16, Math.Max(20, size.Height + 6));
         UiTheme.Frame(graphics, box, UiTheme.Text, Color.Empty);
         UiTheme.TextLine(graphics, text, UiTheme.Small, UiTheme.Surface, box, ContentAlignment.MiddleCenter);
     }
@@ -684,11 +661,6 @@ internal sealed partial class MainForm : Form
 
         UiTheme.Frame(graphics, bounds, fill, border);
         UiTheme.TextLine(graphics, text, UiTheme.Body, color, bounds, ContentAlignment.MiddleCenter);
-    }
-
-    private static void DrawGrip(Graphics graphics, UiLayout layout)
-    {
-        UiTheme.Grip(graphics, layout.Grip, UiTheme.Disabled);
     }
 
     // --- world list ---------------------------------------------------------------------------
@@ -750,13 +722,13 @@ internal sealed partial class MainForm : Form
         switch (index)
         {
             case 0:
-                _clearance = Math.Max(BlastPlanOptions.MinimumClearance, Math.Min(64, value));
+                _clearance = Math.Clamp(value, BlastPlanOptions.MinimumClearance, 64);
                 break;
             case 1:
-                _mergeLinkDistance = Math.Max(0, Math.Min(512, value));
+                _mergeLinkDistance = Math.Clamp(value, 0, 512);
                 break;
             case 2:
-                _vineReach = Math.Max(0, Math.Min(64, value));
+                _vineReach = Math.Clamp(value, 0, 64);
                 break;
             default:
                 break;
@@ -770,10 +742,8 @@ internal sealed partial class MainForm : Form
         Invalidate();
     }
 
-    private void BeginEdit(int knobIndex)
-    {
+    private void BeginEdit(int knobIndex) =>
         BeginEditText(knobIndex, KnobValue(knobIndex).ToString(CultureInfo.InvariantCulture));
-    }
 
     private void BeginEditExtra()
     {
@@ -932,6 +902,7 @@ internal sealed partial class MainForm : Form
         };
 
         string path = _worldPath;
+        TaskScheduler ui = TaskScheduler.FromCurrentSynchronizationContext();
         _running = true;
         _planError = string.Empty;
         _message = "读档中…";
@@ -955,7 +926,7 @@ internal sealed partial class MainForm : Form
             task => CompletePlan(task, path),
             CancellationToken.None,
             TaskContinuationOptions.None,
-            TaskScheduler.FromCurrentSynchronizationContext());
+            ui);
     }
 
     private void CompletePlan(Task<(BlastPlan Plan, long ReadMs, long PlanMs)> task, string path)
@@ -975,7 +946,9 @@ internal sealed partial class MainForm : Form
             return;
         }
 
-        (BlastPlan plan, long readMs, long planMs) = task.Result;
+        BlastPlan plan = task.Result.Plan;
+        long readMs = task.Result.ReadMs;
+        long planMs = task.Result.PlanMs;
         _plan = plan;
         _readMilliseconds = readMs;
         _planMilliseconds = planMs;
@@ -988,9 +961,10 @@ internal sealed partial class MainForm : Form
         _planError = string.Empty;
         _message = string.Format(
             CultureInfo.InvariantCulture,
-            "规划完成 · 读档 {0} ms · 规划 {1} ms",
+            "规划完成 · 读档 {0} ms · 规划 {1} ms · {2}",
             readMs,
-            planMs);
+            planMs,
+            Path.GetFileName(path));
         Invalidate();
     }
 
@@ -1000,18 +974,13 @@ internal sealed partial class MainForm : Form
     {
         string title = _plan?.World.Title is { Length: > 0 } value ? value : Path.GetFileNameWithoutExtension(_worldPath);
         string safe = Sanitize(title);
-        if (safe.Length == 0)
-        {
-            safe = "plan";
-        }
-
-        return safe + extension;
+        return (safe.Length == 0 ? "plan" : safe) + extension;
     }
 
     private static string Sanitize(string name)
     {
-        StringBuilder builder = new(name.Length);
         char[] invalid = Path.GetInvalidFileNameChars();
+        StringBuilder builder = new(name.Length);
         foreach (char c in name.Trim())
         {
             builder.Append(Array.IndexOf(invalid, c) >= 0 ? '_' : c);
@@ -1037,7 +1006,7 @@ internal sealed partial class MainForm : Form
             Process.Start(new ProcessStartInfo(path) { UseShellExecute = true });
             _message = "已写出地图并打开：" + path;
         }
-        catch (Exception ex) when (ex is IOException or UnauthorizedAccessException or InvalidOperationException or System.ComponentModel.Win32Exception)
+        catch (Exception ex) when (ex is IOException or UnauthorizedAccessException or InvalidOperationException or Win32Exception)
         {
             _planError = "打不开地图：" + ex.Message;
         }
@@ -1119,8 +1088,7 @@ internal sealed partial class MainForm : Form
     /// </summary>
     private void InstallRuntimePlugin()
     {
-        _installing = false;
-        _message = "接管插件尚未随本版本发布。计划文件（.zplan）已经可以导出，等插件发布后再安装。";
+        _message = "接管插件尚未随本版本发布。方案可以先用「导出施工文件」导出 .zplan，等插件发布后再安装接管。";
         Invalidate();
     }
 
@@ -1155,6 +1123,7 @@ internal sealed partial class MainForm : Form
                 case UiAction.Refresh:
                     ReloadWorlds();
                     _message = "已刷新存档列表。";
+                    Invalidate();
                     return;
                 case UiAction.Browse:
                     BrowseForWorld();
@@ -1196,7 +1165,7 @@ internal sealed partial class MainForm : Form
             }
         }
 
-        if (layout.ExtraField.Contains(e.Location) && _extraExpanded)
+        if (_extraExpanded && layout.ExtraField.Contains(e.Location))
         {
             BeginEditExtra();
         }
@@ -1253,7 +1222,9 @@ internal sealed partial class MainForm : Form
     protected override void OnMouseDoubleClick(MouseEventArgs e)
     {
         base.OnMouseDoubleClick(e);
-        if (_layout.Header.Contains(e.Location) && !_layout.CloseButton.Contains(e.Location) && !_layout.MinimiseButton.Contains(e.Location))
+        if (_layout.Header.Contains(e.Location) &&
+            !_layout.CloseButton.Contains(e.Location) &&
+            !_layout.MinimiseButton.Contains(e.Location))
         {
             WindowState = WindowState == FormWindowState.Maximized ? FormWindowState.Normal : FormWindowState.Maximized;
         }
@@ -1289,25 +1260,20 @@ internal sealed partial class MainForm : Form
     protected override void OnResize(EventArgs e)
     {
         base.OnResize(e);
-        if (Handle != IntPtr.Zero && Width > 0 && Height > 0)
+        if (Handle != IntPtr.Zero && Visible && Width > 0 && Height > 0)
         {
-            // A borderless window keeps square corners unless it is given a region.
+            // A borderless window keeps square corners unless it is handed a region.
             Region? previous = Region;
             Region = UiTheme.WindowRegion(Width, Height);
             previous?.Dispose();
         }
 
         UpdateLayout();
-        Invalidate();
     }
 
     protected override void WndProc(ref Message m)
     {
         base.WndProc(ref m);
-        if (m.Msg == WmSetRedraw)
-        {
-            UpdateLayout();
-        }
 
         if (m.Msg != WmNcHitTest || (int)m.Result != HtClient)
         {
@@ -1315,7 +1281,8 @@ internal sealed partial class MainForm : Form
         }
 
         // Keep the frameless window resizable without a border: report the edges as non-client.
-        Point screen = new(unchecked((short)(long)m.LParam), unchecked((short)((long)m.LParam >> 16)));
+        long packed = m.LParam.ToInt64();
+        Point screen = new(unchecked((short)packed), unchecked((short)(packed >> 16)));
         Point client = PointToClient(screen);
         bool left = client.X <= ResizeBorder;
         bool right = client.X >= ClientSize.Width - ResizeBorder;
@@ -1346,7 +1313,9 @@ internal sealed partial class MainForm : Form
         Invalidate();
     }
 
-    /// <summary>Drives the smoke test's non-empty states without touching the window handle.</summary>
+    // --- hooks used only by the UI smoke test -------------------------------------------------
+
+    /// <summary>Installs a display-only state so a panel can be rendered without running a plan.</summary>
     internal void ApplySmokeState(PlanPresentation? presentation, BlastPlan? plan, string worldPath, bool running, string message)
     {
         _presentation = presentation;
@@ -1366,7 +1335,7 @@ internal sealed partial class MainForm : Form
         Invalidate();
     }
 
-    /// <summary>Shows the extra seed rectangle editor without a click. Used by the smoke test.</summary>
+    /// <summary>Fills the extra seed rectangle list and expands it. Used by the smoke test.</summary>
     internal void SetExtraRectsText(string text)
     {
         _extraRectsText = text;
@@ -1375,6 +1344,14 @@ internal sealed partial class MainForm : Form
         Invalidate();
     }
 
+    /// <summary>Forces the synthesised hover state used to capture the disabled button's tooltip.</summary>
+    internal void ShowTooltipAt(Rectangle button)
+    {
+        _showEmbeddedTooltip = true;
+        _mouse = new Point(button.X + (button.Width / 2), button.Y + (button.Height / 2));
+        Invalidate();
+    }
+
     [GeneratedRegex(@"^([+-]?\d+)\s*,\s*([+-]?\d+)\s*,\s*([+-]?\d+)\s*,\s*([+-]?\d+)$")]
-    private static partial Regex RectRegex();
+    private static partial Regex RectPattern();
 }
