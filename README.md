@@ -78,7 +78,17 @@ dotnet run --project src/ZhaDai.Cli -- arm "存档.wld"
 
 ## 证据
 
-`tests/ZhaDai.Core.Tests` 是一个不依赖测试框架的控制台程序，**64 条检查**：
+一条命令跑完全部验证（ASCII 输出的脚本，PS 5.1 和 7 都能跑）：
+
+```powershell
+.\tools\verify-all.ps1              # 自动找 Terraria.exe；找不到就跳过注入相关的两步
+```
+
+它会依次：编译四个项目 → 跑测试 → 校验地图载荷 → 渲染并检查五个界面状态（像素统计证明不是空白）
+→ 编译注入插件 → 拿插件里的成员清单核对真实 `Terraria.exe` → 在**副本**上演练注入并对比原文件哈希
+→ `install --dry-run` 确认不落盘。本机结果：**8 步全部通过**。
+
+`tests/ZhaDai.Core.Tests` 是一个不依赖测试框架的控制台程序，**67 条检查**：
 
 ```powershell
 dotnet run --project tests/ZhaDai.Core.Tests -c Release -- "C:\Users\<你>\Documents\My Games\Terraria\Worlds"

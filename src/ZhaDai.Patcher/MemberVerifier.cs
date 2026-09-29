@@ -288,8 +288,8 @@ namespace ZhaDai.Patcher
 
         /// <summary>
         /// Factory method names accepted when decoding the requirement list. The full names are the
-        /// documented shape; the single-letter forms are what Roslyn actually emits for short
-        /// private helpers, so both must be accepted or the decoder silently sees almost nothing.
+        /// documented shape; the single-letter forms are what Roslyn emits when it shortens a
+        /// private helper name, so both must be accepted.
         /// </summary>
         private static readonly string[] FactoryMethods =
         {
@@ -323,11 +323,13 @@ namespace ZhaDai.Patcher
                     var initializer = type.Methods.FirstOrDefault(m => m.Name == ".cctor");
                     if (initializer == null || !initializer.HasBody) return null;
 
-                    var result = new List<RequirementView>();
-                    var skipped = 0;
                     var instructions = initializer.Body.Instructions;
+                    var result = new List<RequirementView>();
+                    var undecodable = 0;
                     for (var i = 0; i < instructions.Count; i++)
                     {
+                        // The factory helpers take (Type, Member, Required[, Note]) and are always
+                        // static, so a MethodReference with HasThis false is enough to spot them.
                         var reference = instructions[i].Operand as MethodReference;
                         if (reference == null || reference.HasThis) continue;
                         if (reference.DeclaringType.FullName != type.FullName) continue;
@@ -335,31 +337,45 @@ namespace ZhaDai.Patcher
                         if (reference.ReturnType.Name != "Requirement") continue;
 
                         var values = ReadStraightLineLiterals(instructions, i);
-                        if (values == null || values.Count < 3) { skipped++; continue; }
-                        if (values.Count < 3) { skipped++; continue; }
+                        if (values == null) { undecodable++; continue; }
+                        if (Environment.GetEnvironmentVariable("ZHAODAI_DEBUG_IL") == "1")
+                            Console.WriteLine("[il] " + reference.Name + "@" + i + " " + string.Join(" | ", values.ToArray()));
 
-                        var typeName = values[0] as string;
-                        var memberName = values[1] as string;
-                        if (string.IsNullOrEmpty(typeName) || memberName == null) continue;
+                        // The payload is two strings (Type, Member) followed by the required flag;
+                        // any further strings are the params array. Positions are not used, because
+                        // the compiler keeps a duplicated array element index on the stack that
+                        // would otherwise be mistaken for the flag.
+                        var strings = values.Where(v => v.StartsWith("str:", StringComparison.Ordinal)).ToList();
+                        if (strings.Count < 2) { undecodable++; continue; }
 
-                        var required = !(values[2] is int) || (int)values[2] != 0;
+                        var required = true;
+                        var memberIndex = values.IndexOf(strings[1]);
+                        for (var v = memberIndex + 1; v < values.Count; v++)
+                        {
+                            if (!values[v].StartsWith("num:", StringComparison.Ordinal)) continue;
+                            required = int.Parse(values[v].Substring(4),
+                                System.Globalization.CultureInfo.InvariantCulture) != 0;
+                            break;
+                        }
 
-                        // A params string[] shows up as the collected string elements after the
-                        // boolean; a plain string would only be the Note argument.
-                        var parameters = new List<string>();
-                        if (values.Count > 4 && values[4] is List<string>) parameters.AddRange((List<string>)values[4]);
-
-                        result.Add(new RequirementView(typeName, memberName, KindFromFactory(reference.Name),
-                            required, parameters.ToArray()));
+                        result.Add(new RequirementView(
+                            strings[0].Substring(4),
+                            strings[1].Substring(4),
+                            KindFromFactory(reference.Name),
+                            required,
+                            strings.Skip(2).Select(s => s.Substring(4)).ToArray()));
                     }
 
                     if (result.Count == 0)
                     {
-                        lines.Add("（IL 解码未得到任何成员项：工厂调用 " + factoryCalls + " 处，无法解码 " + skipped +
-                                  " 处。）");
+                        lines.Add("（" + RequirementsTypeName + " 存在，但 IL 解码没有得到任何成员项（无法解码 " +
+                                  undecodable + " 处调用点）。改用反射。）");
                         return null;
                     }
-                    lines.Add("（成员清单来源：" + RequirementsTypeName + " 的类型初始化器，用 Cecil 离线解码 IL，未加载插件程序集。）");
+
+                    lines.Add("（成员清单来源：" + RequirementsTypeName + " 的类型初始化器，用 Cecil 离线解码 IL" +
+                              (undecodable > 0 ? "；其中 " + undecodable + " 处调用点无法解码，已跳过" : "") +
+                              "。未加载插件程序集。）");
                     return result;
                 }
             }
@@ -371,57 +387,65 @@ namespace ZhaDai.Patcher
         }
 
         /// <summary>
-        /// Reads the literal argument run that immediately precedes the factory call at
-        /// <paramref name="callIndex"/> and returns the values in push order.
+        /// Reads the literal arguments of the factory call at <paramref name="callIndex"/> and
+        /// returns them in push order tagged <c>str:</c> or <c>num:</c>.
         ///
-        /// The run is located by scanning backwards to the previous stack-clearing boundary
-        /// (<c>dup</c> / <c>stelem.ref</c> / <c>call</c> / <c>stsfld</c>), then replayed forwards.
-        /// Only literals are understood: <c>ldstr</c> becomes a string, <c>ldc.i4*</c> becomes an
-        /// int, and a <c>newarr</c> starts the params string array that collects the remaining
-        /// strings. Because the scan stops at the previous <c>dup</c>, array setup instructions
-        /// (<c>newarr</c> without type, <c>dup</c>, array index) are outside the run and cannot be
-        /// mistaken for arguments. Anything unexpected makes the call site decode as null, which
-        /// is reported as "list unavailable" rather than as a wrong list.
+        /// The run is bounded by the enclosing statement (a <c>dup</c>/<c>call</c>/<c>stsfld</c>
+        /// boundary). When a <c>newarr</c> appears in the run the params-array literal belongs to
+        /// this call and is captured from its first stored element; integers are otherwise kept
+        /// because one of them is the required flag. Only literals are understood - anything else
+        /// makes the call site decode as null, which is reported as "cannot decode" rather than as
+        /// a wrong list.
         /// </summary>
-        private static List<object> ReadStraightLineLiterals(IList<Instruction> instructions, int callIndex)
+        private static List<string> ReadStraightLineLiterals(IList<Instruction> instructions, int callIndex)
         {
             var start = 0;
+            var arrayStart = -1;
             for (var i = callIndex - 1; i >= 0; i--)
             {
-                var code = instructions[i].OpCode;
-                if (code == OpCodes.Dup || code == OpCodes.Stelem_Ref ||
-                    code == OpCodes.Call || code == OpCodes.Callvirt || code == OpCodes.Stsfld)
+                var code = instructions[i].OpCode.Code;
+                if (code == Code.Newarr)
+                {
+                    for (var j = i + 1; j < callIndex; j++)
+                    {
+                        if (instructions[j].OpCode.Code == Code.Ldstr)
+                        {
+                            arrayStart = j;
+                            break;
+                        }
+                    }
+                    break;
+                }
+                if (code == Code.Dup || code == Code.Call || code == Code.Callvirt || code == Code.Stsfld)
                 {
                     start = i + 1;
                     break;
                 }
             }
+            if (arrayStart >= 0) start = arrayStart;
 
-            var values = new List<object>();
-            List<string> array = null;
+            var values = new List<string>();
             for (var i = start; i < callIndex; i++)
             {
                 var instruction = instructions[i];
-                if (instruction.OpCode == OpCodes.Ldstr)
+                var code = instruction.OpCode.Code;
+                if (code == Code.Ldstr) values.Add("str:" + (instruction.Operand as string));
+                else if (code == Code.Ldc_I4_0) values.Add("num:0");
+                else if (code == Code.Ldc_I4_1) values.Add("num:1");
+                else if (code == Code.Ldc_I4_2) values.Add("num:2");
+                else if (code == Code.Ldc_I4_3) values.Add("num:3");
+                else if (code == Code.Ldc_I4_4) values.Add("num:4");
+                else if (code == Code.Ldc_I4_5) values.Add("num:5");
+                else if (code == Code.Ldc_I4_6) values.Add("num:6");
+                else if (code == Code.Ldc_I4_7) values.Add("num:7");
+                else if (code == Code.Ldc_I4_8) values.Add("num:8");
+                else if (code == Code.Ldc_I4_S && instruction.Operand is sbyte)
+                    values.Add("num:" + ((sbyte)instruction.Operand).ToString(System.Globalization.CultureInfo.InvariantCulture));
+                else if (code == Code.Ldc_I4 && instruction.Operand is int)
+                    values.Add("num:" + ((int)instruction.Operand).ToString(System.Globalization.CultureInfo.InvariantCulture));
+                else if (code == Code.Dup || code == Code.Stelem_Ref || code == Code.Nop || code == Code.Newarr)
                 {
-                    if (array != null) array.Add(instruction.Operand as string);
-                    else values.Add(instruction.Operand as string);
-                }
-                else if (instruction.OpCode == OpCodes.Ldc_I4_0) values.Add(0);
-                else if (instruction.OpCode == OpCodes.Ldc_I4_1) values.Add(1);
-                else if (instruction.OpCode == OpCodes.Ldc_I4_2) values.Add(2);
-                else if (instruction.OpCode == OpCodes.Ldc_I4_3) values.Add(3);
-                else if (instruction.OpCode == OpCodes.Ldc_I4_4) values.Add(4);
-                else if (instruction.OpCode == OpCodes.Ldc_I4_S && instruction.Operand is sbyte) values.Add((int)(sbyte)instruction.Operand);
-                else if (instruction.OpCode == OpCodes.Ldc_I4 && instruction.Operand is int) values.Add(instruction.Operand);
-                else if (instruction.OpCode == OpCodes.Newarr)
-                {
-                    array = new List<string>();
-                    values.Add(array);
-                }
-                else if (instruction.OpCode == OpCodes.Nop)
-                {
-                    // Alignment padding carries no literal.
+                    // Array plumbing carries no value of its own.
                 }
                 else
                 {
