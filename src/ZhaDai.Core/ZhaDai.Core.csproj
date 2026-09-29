@@ -9,7 +9,7 @@
     <EnforceCodeStyleInBuild>false</EnforceCodeStyleInBuild>
     <RootNamespace>ZhaDai.Core</RootNamespace>
     <AssemblyName>ZhaDai.Core</AssemblyName>
-    <Version>0.1.2-alpha</Version>
+    <Version>0.1.3-alpha</Version>
     <Description>Offline containment planner: reads a vanilla Terraria world and derives a dynamite blasting plan.</Description>
   </PropertyGroup>
 

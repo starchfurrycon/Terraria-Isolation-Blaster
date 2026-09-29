@@ -54,6 +54,9 @@ namespace ZhaDai.Runtime
         /// <summary>True once run.cfg has supplied a hotkey; from then on the key owns the on/off switch.</summary>
         private static bool hotkeyConfigured;
 
+        /// <summary>Whether the key channel has been reported in the log yet (once per session).</summary>
+        private static bool keyChannelReported;
+
         /// <summary>The config's own enabled= is applied once, so it cannot fight the hotkey every second.</summary>
         private static bool configEnabledApplied;
         private static bool allowExplosives;
@@ -150,22 +153,35 @@ namespace ZhaDai.Runtime
                 return false;
             }
 
-            object[] pressed = reflection.KeyboardStatePressedKeys.Invoke(state, null) as object[];
+            // `Keys[]` is an array of a value type, and a value-type array can never be cast to `object[]`
+            // -- `as object[]` silently produced null here, which is why F10 did nothing at all while the
+            // plugin looked perfectly healthy. `Array` walks any array whatever its element type.
+            Array pressed = reflection.KeyboardStatePressedKeys.Invoke(state, null) as Array;
+            return HotkeyMatch.Any(pressed, hotkey);
+        }
+
+        /// <summary>
+        /// Says once, at startup, whether the key channel reads at all. The first real-machine test failed
+        /// silently: no crash, no log line, just a key that did nothing. A run that cannot read keys now
+        /// says so in runtime.log instead of leaving the player to guess.
+        /// </summary>
+        private static void ReportKeyChannel()
+        {
+            if (reflection == null || reflection.MainKeyState == null || reflection.KeyboardStatePressedKeys == null)
+            {
+                Log("按键通道不可用（反射拿不到 Main.keyState），请在 run.cfg 里写 enabled=1 让它自动开始。");
+                return;
+            }
+
+            object state = reflection.MainKeyState.GetValue(null);
+            Array pressed = state == null ? null : reflection.KeyboardStatePressedKeys.Invoke(state, null) as Array;
             if (pressed == null)
             {
-                return false;
+                Log("按键通道异常（GetPressedKeys 没返回数组），请在 run.cfg 里写 enabled=1 让它自动开始。");
+                return;
             }
 
-            for (int i = 0; i < pressed.Length; i++)
-            {
-                if (pressed[i] != null &&
-                    string.Equals(pressed[i].ToString(), hotkey, StringComparison.OrdinalIgnoreCase))
-                {
-                    return true;
-                }
-            }
-
-            return false;
+            Log("按键通道就绪：" + hotkey + " 按下开始、再按停止（当前按下 " + pressed.Length + " 个键）。");
         }
 
         /// <summary>One key flips the run on and off, so the player keeps the switch in game.</summary>
@@ -236,7 +252,7 @@ namespace ZhaDai.Runtime
                 return;
             }
 
-            Log("反射自检通过，等待 " + Path.Combine("ZhaDai", "run.cfg") + " 里的 enabled=1。");
+            Log("反射自检通过。读取 " + Path.Combine("ZhaDai", "run.cfg") + "：带 hotkey= 就按键开始，否则等 enabled=1。");
             Poll();
         }
 
@@ -286,6 +302,11 @@ namespace ZhaDai.Runtime
 
             configStamp = stamp;
             string[] lines = File.ReadAllLines(configPath);
+
+            // `enabled` is remembered and applied after the whole file is read: the file lists enabled= before
+            // hotkey=, so deciding as we go meant a file with a hotkey was treated as if it had none.
+            bool enabledWanted = false;
+            bool sawEnabled = false;
             for (int i = 0; i < lines.Length; i++)
             {
                 string line = lines[i].Trim();
@@ -301,22 +322,8 @@ namespace ZhaDai.Runtime
                 switch (key)
                 {
                     case "enabled":
-                        bool wanted = value == "1" || value.Equals("true", StringComparison.OrdinalIgnoreCase);
-                        if (hotkeyConfigured)
-                        {
-                            // With a hotkey in play the file only gets to say it once; otherwise the
-                            // per-second re-read would switch the run straight back off after a key press.
-                            if (!configEnabledApplied)
-                            {
-                                enabled = wanted;
-                                configEnabledApplied = true;
-                            }
-                        }
-                        else
-                        {
-                            enabled = wanted;
-                        }
-
+                        enabledWanted = value == "1" || value.Equals("true", StringComparison.OrdinalIgnoreCase);
+                        sawEnabled = true;
                         break;
                     case "plan":
                         OpenPlan(value);
@@ -341,6 +348,31 @@ namespace ZhaDai.Runtime
                     default:
                         break;
                 }
+            }
+
+            // Now that the whole file is known, the config's enabled= gets its one say.
+            if (sawEnabled)
+            {
+                if (hotkeyConfigured)
+                {
+                    // With a hotkey in play the file only gets to say it once; otherwise the per-second
+                    // re-read would switch the run straight back off after a key press.
+                    if (!configEnabledApplied)
+                    {
+                        enabled = enabledWanted;
+                        configEnabledApplied = true;
+                    }
+                }
+                else
+                {
+                    enabled = enabledWanted;
+                }
+            }
+
+            if (!keyChannelReported && hotkeyConfigured)
+            {
+                keyChannelReported = true;
+                ReportKeyChannel();
             }
 
             if (enabled && plan == null)

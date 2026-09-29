@@ -22,6 +22,7 @@ internal static class Program
         RunSpreadTests();
         RunPlannerTests();
         ExecutorTests.Run(Check);
+        HotkeyTests.Run(Check);
         PlanProtectionTests.Run(Check);
         PathfinderTests.Run(Check);
         PlugTests.Run(Check);
