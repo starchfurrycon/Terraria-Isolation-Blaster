@@ -20,6 +20,14 @@ namespace ZhaDai.Automation
 
         double PlayerVelocityY { get; }
 
+        /// <summary>
+        /// Standing on something solid. The bridge answers this itself because "where the floor is" depends on
+        /// how each side reports the player's position: the game reports the body centre, the test bridge
+        /// reports the tile the player occupies, and a tile offset guessed in the executor gets one of them
+        /// wrong.
+        /// </summary>
+        bool PlayerGrounded { get; }
+
         int PlayerLife { get; }
 
         int PlayerLifeMax { get; }

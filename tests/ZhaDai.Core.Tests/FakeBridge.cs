@@ -22,6 +22,9 @@ internal sealed class FakeBridge : IGameBridge
 
     private double velocityY;
     private long deadSince = -1;
+    private bool jumpWasHeld;
+    private int held;
+    private int jumpTicks = 24;
     private int pendingDx;
     private int pendingDy;
     private bool pendingJump;
@@ -59,6 +62,9 @@ internal sealed class FakeBridge : IGameBridge
     public double PlayerVelocityX { get; private set; }
 
     public double PlayerVelocityY => velocityY;
+
+    /// <summary>This bridge's player occupies a single row, so the floor is the row below it.</summary>
+    public bool PlayerGrounded => !PlayerDead && IsSolid((int)Math.Round(PlayerX), (int)Math.Round(PlayerY) + 1);
 
     public int PlayerLife { get; private set; } = 100;
 
@@ -236,7 +242,28 @@ internal sealed class FakeBridge : IGameBridge
         pendingJump = jump;
         LastRequestedDX = dx;
         LastRequestedDY = dy;
+
+        // Jump statistics. A walker that flicks the button on and off every frame has a hold of one; a walker
+        // that holds it for the whole rise has a hold of many, and the two look identical in a screenshot.
+        if (jump)
+        {
+            JumpRequestTicks++;
+            held++;
+            if (held > MaxJumpHoldTicks)
+            {
+                MaxJumpHoldTicks = held;
+            }
+        }
+        else
+        {
+            held = 0;
+        }
     }
+
+    /// <summary>Ticks the executor asked for a jump, and the longest unbroken hold of the whole run.</summary>
+    public int JumpRequestTicks { get; private set; }
+
+    public int MaxJumpHoldTicks { get; private set; }
 
     /// <summary>The most recent movement the executor asked for, kept for assertions.</summary>
     public int LastRequestedDX { get; private set; }
@@ -322,7 +349,15 @@ internal sealed class FakeBridge : IGameBridge
         }
     }
 
-    /// <summary>The executor's movement intent is applied here, after the fact, with simple physics.</summary>
+    /// <summary>
+    /// The executor's movement intent is applied here, after the fact, with simple physics.
+    ///
+    /// This deliberately copies the parts of the real game the walker has to live with: a step up of one or
+    /// two tiles is climbed by walking (Collision.StepUp), a jump is an impulse that only fires on a fresh
+    /// press while standing, and holding the button keeps the rise going rather than firing again. The first
+    /// real-machine walk failed on exactly these three points, and a model without them cannot tell a working
+    /// walker from a broken one.
+    /// </summary>
     private void ApplyMovement(int dx, int dy, bool jump)
     {
         if (PlayerDead)
@@ -330,18 +365,26 @@ internal sealed class FakeBridge : IGameBridge
             return;
         }
 
-        if (jump)
-        {
-            velocityY = -0.25d;
-        }
-
         if (dx != 0)
         {
-            double nextX = PlayerX + (Math.Sign(dx) * Speed);
-            if (!IsSolid((int)Math.Round(nextX), (int)Math.Round(PlayerY)))
+            int sign = Math.Sign(dx);
+            int px = (int)Math.Round(PlayerX);
+            int py = (int)Math.Round(PlayerY);
+            double nextX = PlayerX + (sign * Speed);
+            int nx = (int)Math.Round(nextX);
+
+            if (!IsSolid(nx, py))
             {
                 PlayerX = nextX;
-                PlayerVelocityX = Math.Sign(dx) * Speed;
+                PlayerVelocityX = sign * Speed;
+            }
+            else if (!IsSolid(nx, py - 1) && !IsSolid(nx, py - 2))
+            {
+                // One or two tiles of rise is a step, not a wall: the player walks up it. Two is generous,
+                // but the walker is allowed to jump as well and this keeps the model from fighting it.
+                PlayerX = nextX;
+                PlayerY = py - 1;
+                PlayerVelocityX = sign * Speed;
             }
             else
             {
@@ -353,6 +396,23 @@ internal sealed class FakeBridge : IGameBridge
             PlayerVelocityX = 0;
         }
 
+        int column = (int)Math.Round(PlayerX);
+        bool onFloor = IsSolid(column, (int)Math.Round(PlayerY) + 1);
+
+        if (jump && !jumpWasHeld && onFloor)
+        {
+            velocityY = -0.25d;
+            jumpTicks = 0;
+        }
+        else if (jump && !onFloor && velocityY < 0 && jumpTicks < 24)
+        {
+            // Held while still rising: keep the rise at full speed. This is the variable-height jump.
+            velocityY = -0.25d;
+            jumpTicks++;
+        }
+
+        jumpWasHeld = jump;
+
         velocityY += 0.02d;
         if (velocityY > 0.3d)
         {
@@ -360,18 +420,30 @@ internal sealed class FakeBridge : IGameBridge
         }
 
         double nextY = PlayerY + velocityY;
-        if (velocityY > 0 && IsSolid((int)Math.Round(PlayerX), (int)Math.Round(nextY) + 1))
+        if (velocityY > 0 && IsSolid(column, (int)Math.Round(nextY) + 1))
         {
-            PlayerY = Math.Floor(nextY);
+            // Land on the row above the floor. Math.Floor here left the player one row short of the ground it
+            // had just touched, so it never registered as standing and could never jump -- the stall that the
+            // terrain dump showed as "player at y=21, floor at y=23".
+            PlayerY = (int)Math.Round(nextY);
             velocityY = 0;
         }
-        else if (velocityY < 0 && IsSolid((int)Math.Round(PlayerX), (int)Math.Round(nextY)))
+        else if (velocityY < 0 && IsSolid(column, (int)Math.Round(nextY)))
         {
             velocityY = 0;
         }
         else
         {
             PlayerY = nextY;
+        }
+
+        // The real game pushes a player out of solid tiles. Without this the model leaves the player embedded
+        // in the crater lip after a blast, where it is neither standing nor falling and the walker can never
+        // make progress -- and there is nothing for the walker to fix there, the model itself is wrong.
+        for (int guard = 0; guard < 6 && IsSolid(column, (int)Math.Round(PlayerY)); guard++)
+        {
+            PlayerY -= 1;
+            velocityY = 0;
         }
     }
 

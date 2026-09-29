@@ -90,6 +90,20 @@ namespace ZhaDai.Runtime
             }
         }
 
+        /// <summary>
+        /// Standing on solid ground. The reported position is the body centre, and the player is a bit over
+        /// two tiles tall, so the floor sits about two rows below the centre; the two neighbouring columns are
+        /// checked as well because the hitbox is wider than one tile.
+        /// </summary>
+        public bool PlayerGrounded
+        {
+            get
+            {
+                int x = (int)Math.Round(PlayerX);
+                int y = (int)Math.Round(PlayerY);
+                return IsSolid(x, y + 2) || IsSolid(x - 1, y + 2) || IsSolid(x + 1, y + 2);
+            }
+        }
         public double PlayerVelocityY
         {
             get

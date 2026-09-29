@@ -174,12 +174,18 @@ namespace ZhaDai.Automation
         /// <summary>Tiles the route itself had to mine. The blast crater is counted separately.</summary>
         public int RouteDigs { get; internal set; }
 
+        /// <summary>Jumps started while walking. Small is good: one per obstacle, not one per frame.</summary>
+        public int Jumps { get; internal set; }
+
         /// <summary>Times work was paused by a hazard (a hostile in the face, lava, deep water) instead of
         /// by missing supplies. A run that ends with a big number here is a run the world fought back on.</summary>
         public int HazardWaits { get; internal set; }
 
         /// <summary>Last thing the path search had to say, kept for the log.</summary>
         public string LastRouteNote { get; internal set; } = string.Empty;
+
+        /// <summary>Which walking branch ran this tick. Read from the debug harness, not shown to players.</summary>
+        public string WalkNote { get; internal set; } = string.Empty;
 
         public long Ticks { get; internal set; }
 
@@ -251,6 +257,19 @@ namespace ZhaDai.Automation
         private int routeRestarts;
         private int walkStuck;
         private string lastPathNote = string.Empty;
+
+        /// <summary>
+        /// Jump state. <c>jumpHeld</c> is what gets written to the game: it stays true for a whole rise.
+        /// <c>canJump</c> is the mid-air lock -- it only goes true again once the player is back on the floor,
+        /// which is what stops the walk from spending every extra jump it owns.
+        /// </summary>
+        private bool jumpHeld;
+        private bool canJump = true;
+        private long jumpStartTick;
+        private int jumps;
+
+        /// <summary>Longest a single jump is held, in ticks. A vanilla full-height jump is far shorter.</summary>
+        private const int JumpHoldTicks = 30;
 
         public BlastExecutor(ExecutionPlan plan, ExecutorOptions options)
         {
@@ -699,6 +718,7 @@ namespace ZhaDai.Automation
                     game.DigTile(waypointX, waypointY);
                     status.RouteDigs++;
                     game.SetMovement(0, 0, false);
+                    status.WalkNote = "挖路点 " + waypointX + "," + waypointY;
                     return;
                 }
 
@@ -1087,6 +1107,7 @@ namespace ZhaDai.Automation
             if (targetX == px && targetY == py)
             {
                 game.SetMovement(0, 0, false);
+                status.WalkNote = "已在路点上";
                 return;
             }
 
@@ -1101,6 +1122,7 @@ namespace ZhaDai.Automation
                 PlanTravel(game, px, py, targetX, targetY);
                 if (!travelValid)
                 {
+                    status.WalkNote = "寻路失败→直线";
                     WalkStraight(game, targetX, targetY);
                     return;
                 }
@@ -1115,6 +1137,7 @@ namespace ZhaDai.Automation
 
             if (travelCursor >= travelX.Count)
             {
+                status.WalkNote = "路线走完→直线";
                 WalkStraight(game, targetX, targetY);
                 return;
             }
@@ -1134,6 +1157,7 @@ namespace ZhaDai.Automation
                     game.DigTile(waypointX, waypointY);
                     status.RouteDigs++;
                     game.SetMovement(0, 0, false);
+                    status.WalkNote = "挖路点 " + waypointX + "," + waypointY;
                     return;
                 }
 
@@ -1145,6 +1169,7 @@ namespace ZhaDai.Automation
                     PlanTravel(game, px, py, targetX, targetY);
                 }
                 walkStuck++;
+                status.WalkNote = "路点被堵 " + waypointX + "," + waypointY;
                 if (!travelValid)
                 {
                     WalkStraight(game, targetX, targetY);
@@ -1152,7 +1177,66 @@ namespace ZhaDai.Automation
                 }
             }
 
-            game.SetMovement(stepX, stepY, stepY < 0);
+            WalkStep(game, px, py, stepX, stepY, waypointY);
+        }
+
+        /// <summary>
+        /// Turns "head for that waypoint" into the game's own controls.
+        ///
+        /// The jump handling is the whole point. Terraria's jump is a variable-height one: releasing
+        /// <c>controlJump</c> while still rising cuts the rise short (so a one-frame press barely leaves the
+        /// ground), and pressing it again in mid-air spends another jump -- that is how the cloud/blizzard/
+        /// sandstorm bottles and the frog leg fire. The first real-machine walk flicked the button on and off
+        /// every frame, which is exactly the recipe for "cannot climb anything" plus "burns every extra jump
+        /// on every pebble". Holding the button for the whole rise fixes both at once: full height, and no
+        /// release/press pair for the game to read as a fresh jump.
+        /// </summary>
+        private void WalkStep(IGameBridge game, int px, int py, int stepX, int stepY, int waypointY)
+        {
+            bool grounded = game.PlayerGrounded;
+            if (grounded)
+            {
+                canJump = true;
+            }
+
+            bool rising = game.PlayerVelocityY < -0.01d;
+
+            if (jumpHeld)
+            {
+                // Let go when the rise is over, when we are already high enough for the waypoint, or when the
+                // hold has gone on long enough. The flag stays down until we are back on solid ground, so a
+                // second press in mid-air -- a fresh extra jump -- cannot happen.
+                bool highEnough = game.PlayerY <= waypointY;
+                if (!rising || highEnough || game.Tick - jumpStartTick > JumpHoldTicks)
+                {
+                    jumpHeld = false;
+                    canJump = false;
+                }
+            }
+
+            if (!jumpHeld && canJump && grounded && (stepX != 0 || stepY < 0))
+            {
+                // A single tile of rise is a step the game walks up by itself (Collision.StepUp). Only a
+                // taller rise, or a wall right in front of the body, is worth a jump. The row below the player
+                // is deliberately not part of this: that row is the floor ahead, and counting it made the walk
+                // jump on every single tile of flat ground.
+                bool wallAhead = stepX != 0 &&
+                    (game.IsSolid(px + stepX, py - 1) || game.IsSolid(px + stepX, py));
+                bool tallerRise = waypointY <= py - 2;
+                bool straightUp = stepX == 0 && stepY < 0;
+                if (wallAhead || tallerRise || straightUp)
+                {
+                    jumpHeld = true;
+                    jumpStartTick = game.Tick;
+                    jumps++;
+                    status.Jumps = jumps;
+                }
+            }
+
+            // dy stays 0 on purpose: controlUp is what grabs ropes and controlDown is what drops the player
+            // through a platform, and neither belongs in "walk to the next charge".
+            status.WalkNote = (jumpHeld ? "跳 " : "走 ") + stepX + " 路点y " + waypointY + " 我 " + px + "," + py;
+            game.SetMovement(stepX, 0, jumpHeld);
         }
 
         /// <summary>
@@ -1239,6 +1323,7 @@ namespace ZhaDai.Automation
             {
                 game.DigTile(aheadX, aheadY);
                 game.SetMovement(0, 0, false);
+                status.WalkNote = "直线挖 " + aheadX + "," + aheadY + " 类型 " + game.TileType(aheadX, aheadY);
                 return;
             }
 

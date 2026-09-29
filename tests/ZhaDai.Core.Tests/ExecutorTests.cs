@@ -61,6 +61,9 @@ internal static class ExecutorTests
         check(executor.Status.BlastHits == 0, $"起爆瞬间都在爆炸范围外（实际被炸到 {executor.Status.BlastHits} 次）");
         check(executor.Status.State == ExecutorState.Finished, $"跑完进入 Finished（实际 {executor.Status.State}）");
         check(executor.Status.Skipped == 0, $"没有跳过任何一发（实际跳过 {executor.Status.Skipped}）");
+        check(
+            executor.Status.Jumps <= 20 && bridge.MaxJumpHoldTicks >= 3,
+            $"跳得不多且是按住跳的（跳 {executor.Status.Jumps} 次、最长按住 {bridge.MaxJumpHoldTicks} tick、按住共 {bridge.JumpRequestTicks} tick）");
     }
 
     private static void DeathResumes(Action<bool, string> check)
@@ -304,6 +307,58 @@ internal static class ExecutorTests
         check(
             TileCatalog.Classify(1, hardMode: false, downedGolemBoss: false, getGoodWorld: false, pickPower: 35) == RemovalMethod.Blast,
             "普通石头交给雷管");
+    }
+
+    /// <summary>
+    /// Scratch harness for the walking layer: runs the clean scenario and prints where the player actually is
+    /// every so often, so a stall can be read instead of guessed at. Enabled with --walkdebug.
+    /// </summary>
+    public static void DebugWalk()
+    {
+        FakeBridge bridge = new();
+        BlastExecutor executor = new(MakePlan(3, standOffset: 10), new ExecutorOptions());
+        Console.WriteLine($"起点 ({bridge.PlayerX:0.0},{bridge.PlayerY:0.0}) 目标站位 50/90/130 起点行 19 地面行 20");
+        for (int tick = 1; tick <= 6000; tick++)
+        {
+            executor.Step(bridge);
+            bridge.Advance();
+            if (tick % 10 == 0 && tick > 580 && tick < 700 || tick % 500 == 0)
+            {
+                Console.WriteLine(
+                    $"t={tick,5} 状态={executor.Status.State,-10} 位置=({bridge.PlayerX,6:0.00},{bridge.PlayerY,6:0.00}) " +
+                    $"请求dx={bridge.LastRequestedDX,2} dy={bridge.LastRequestedDY,2} 速度Y={bridge.PlayerVelocityY,6:0.00} " +
+                    $"站地={bridge.PlayerGrounded,-5} 跳={executor.Status.Jumps} 挖={bridge.DigCount} " +
+                    $"路线={executor.Status.LastRouteNote} | 分支[{executor.Status.WalkNote}] 跳过={executor.Status.Skipped}/{executor.Status.LastSkip} {executor.Status.Message}");
+            }
+
+            if (tick == 1520)
+            {
+                int cx = (int)Math.Round(bridge.PlayerX);
+                int cy = (int)Math.Round(bridge.PlayerY);
+                Console.WriteLine($"卡住点地形（我={cx},{cy}，列 {cx - 4}..{cx + 6}）：");
+                for (int y = cy - 4; y <= cy + 4; y++)
+                {
+                    string row = "    ";
+                    for (int x = cx - 4; x <= cx + 6; x++)
+                    {
+                        row += bridge.IsSolid(x, y) ? '#' : '.';
+                    }
+
+                    Console.WriteLine(row + "   y=" + y);
+                }
+            }
+
+            if (executor.Status.State == ExecutorState.Finished || executor.Status.State == ExecutorState.Halted)
+            {
+                Console.WriteLine($"结束于 t={tick} 状态={executor.Status.State}");
+                break;
+            }
+        }
+
+        foreach (string line in bridge.Logs)
+        {
+            Console.WriteLine("  日志 " + line);
+        }
     }
 
     private static ExecutionPlan MakePlan(int count, int standOffset)    {

@@ -33,6 +33,12 @@ internal static class Program
             return 0;
         }
 
+        if (args.Length >= 1 && args[0] == "--walkdebug")
+        {
+            ExecutorTests.DebugWalk();
+            return 0;
+        }
+
         if (args.Length >= 1 && args[0] == "--pathbench")
         {
             PathBench.Run();

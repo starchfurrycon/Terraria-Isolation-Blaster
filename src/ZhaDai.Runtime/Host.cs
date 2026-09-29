@@ -537,6 +537,8 @@ namespace ZhaDai.Runtime
                     lines.Add("routes=" + status.RoutesPlanned.ToString(CultureInfo.InvariantCulture));
                     lines.Add("routeRestarts=" + status.RouteRestarts.ToString(CultureInfo.InvariantCulture));
                     lines.Add("routeDigs=" + status.RouteDigs.ToString(CultureInfo.InvariantCulture));
+            lines.Add("jumps=" + status.Jumps.ToString(CultureInfo.InvariantCulture));
+            lines.Add("walk=" + status.WalkNote);
                     lines.Add("routeNote=" + status.LastRouteNote);
                     lines.Add("digsDone=" + status.DigsDone.ToString(CultureInfo.InvariantCulture) + "/" +
                               status.DigsSkipped.ToString(CultureInfo.InvariantCulture));
