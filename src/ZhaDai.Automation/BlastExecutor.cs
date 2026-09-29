@@ -104,6 +104,26 @@ namespace ZhaDai.Automation
         public int MaxTicksPerPlug { get; set; } = 900;
     }
 
+    /// <summary>One state transition, with the tick and charge it happened on. Kept for the run report.</summary>
+    public sealed class StateChange
+    {
+        public StateChange(long tick, int chargeIndex, ExecutorState state, string message)
+        {
+            Tick = tick;
+            ChargeIndex = chargeIndex;
+            State = state;
+            Message = message ?? string.Empty;
+        }
+
+        public long Tick { get; }
+
+        public int ChargeIndex { get; }
+
+        public ExecutorState State { get; }
+
+        public string Message { get; }
+    }
+
     /// <summary>Read-only progress, so a UI or the runtime overlay can show what is happening.</summary>
     public sealed class ExecutorStatus
     {
@@ -154,6 +174,10 @@ namespace ZhaDai.Automation
         /// <summary>Tiles the route itself had to mine. The blast crater is counted separately.</summary>
         public int RouteDigs { get; internal set; }
 
+        /// <summary>Times work was paused by a hazard (a hostile in the face, lava, deep water) instead of
+        /// by missing supplies. A run that ends with a big number here is a run the world fought back on.</summary>
+        public int HazardWaits { get; internal set; }
+
         /// <summary>Last thing the path search had to say, kept for the log.</summary>
         public string LastRouteNote { get; internal set; } = string.Empty;
 
@@ -186,6 +210,19 @@ namespace ZhaDai.Automation
         private const int MaxRetreatSteps = 200;
 
         private long armedTick = -1;
+
+        /// <summary>The bridge from the current step, so a state change can be logged where it happens.</summary>
+        private IGameBridge activeGame;
+
+        /// <summary>Bounded history of state changes, so a run can be explained after the fact.</summary>
+        private readonly List<StateChange> stateHistory = new List<StateChange>();
+
+        private const int StateHistoryLimit = 400;
+
+        private readonly Dictionary<SkipReason, int> skipCounts = new Dictionary<SkipReason, int>();
+
+
+
         private long stateTick;
         private int pathCursor;
         private bool deathRecorded;
@@ -242,6 +279,7 @@ namespace ZhaDai.Automation
             }
 
             status.Ticks++;
+            activeGame = game;
 
             if (stopped)
             {
@@ -505,6 +543,7 @@ namespace ZhaDai.Automation
             if (game.NearestHostileDistance < options.HostileSafeDistance / 2d)
             {
                 game.SetMovement(0, 0, false);
+                status.HazardWaits++;
                 SetState(ExecutorState.DigFence, SkipReason.HostileTooClose, "有敌怪贴脸，先不打镐子。");
                 digTick = game.Tick - (options.MaxTicksPerDig / 2);
                 return;
@@ -587,13 +626,15 @@ namespace ZhaDai.Automation
 
             if (game.PlayerLiquidKind == 2 && !game.PlayerLavaImmune)
             {
+                status.HazardWaits++;
                 SkipCharge(game, SkipReason.StandingInLava, "正踩在岩浆里，先离开。");
                 return;
             }
 
             if (game.NearestHostileDistance < options.HostileSafeDistance)
             {
-                status.Message = "有敌怪靠近，先等它走开或处理掉。";
+                status.HazardWaits++;
+                    status.Message = "有敌怪靠近，先等它走开或处理掉。";
                 return;
             }
 
@@ -1221,6 +1262,7 @@ namespace ZhaDai.Automation
         {
             status.Skipped++;
             status.LastSkip = reason;
+            CountSkip(reason);
             status.ChargeIndex++;
             game.Log(message);
             SetState(ExecutorState.Idle, reason, message);
@@ -1231,13 +1273,59 @@ namespace ZhaDai.Automation
             // LastSkip is owned by the code that actually decides to skip or fire; setting it here too
             // would let a later ordinary transition such as "finished" erase the reason.
             _ = reason;
+
+            // Every transition goes into the log with the tick and the charge it happened on. A run is
+            // otherwise a black box: when the player reports "it stood next to a slime for a minute", the
+            // line that says Waiting -> Digging at tick 41900 and charge 12/2146 is the evidence.
+            if (state != status.State || !string.Equals(message, status.Message, StringComparison.Ordinal))
+            {
+                stateHistory.Add(new StateChange(status.Ticks, status.ChargeIndex, state, message));
+                if (stateHistory.Count > StateHistoryLimit)
+                {
+                    stateHistory.RemoveAt(0);
+                }
+
+                if (!string.IsNullOrEmpty(message) && activeGame != null)
+                {
+                    activeGame.Log(
+                        string.Format(
+                            CultureInfo.InvariantCulture,
+                            "[{0} tick | 第 {1}/{2} 发] {3}：{4}",
+                            status.Ticks,
+                            status.ChargeIndex,
+                            status.ChargeCount,
+                            state,
+                            message));
+                }
+            }
+
             status.State = state;
             status.Message = message;
+        }
+
+        /// <summary>Why a charge was given up, kept as counts so the report can point at the real problem.</summary>
+        private void CountSkip(SkipReason reason)
+        {
+            int count;
+            skipCounts.TryGetValue(reason, out count);
+            skipCounts[reason] = count + 1;
         }
 
         private static double Chebyshev(double ax, double ay, double bx, double by)
         {
             return Math.Max(Math.Abs(ax - bx), Math.Abs(ay - by));
+        }
+
+        /// <summary>State changes, newest last, capped so a long run cannot grow without bound.</summary>
+        public IReadOnlyList<StateChange> StateHistory
+        {
+            get { return stateHistory; }
+        }
+
+        /// <summary>How many charges were given up, by reason.</summary>
+        public IReadOnlyDictionary<SkipReason, int> SkipCounts
+        {
+            get { return skipCounts; }
         }
 
         /// <summary>Total tiles the plan will destroy if it runs to the end; useful in a report.</summary>

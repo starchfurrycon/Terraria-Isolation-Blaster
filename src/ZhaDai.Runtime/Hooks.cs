@@ -1,3 +1,5 @@
+using System;
+
 namespace ZhaDai.Runtime
 {
     /// <summary>
@@ -14,13 +16,38 @@ namespace ZhaDai.Runtime
         /// <summary>Frame start, before the local player updates. The executor decides here.</summary>
         public static void BeforePlayerUpdate()
         {
-            Host.Frame();
+            Guard(Host.Frame);
         }
 
         /// <summary>End of the player update. Used to close out the frame.</summary>
         public static void AfterPlayerUpdate()
         {
-            Host.EndFrame();
+            Guard(Host.EndFrame);
+        }
+
+        /// <summary>
+        /// Runs a host entry point with the game protected from us. The try/catch inside the host cannot cover
+        /// everything: if a type the host needs fails to load -- a missing ZhaDai.Automation.dll next to the
+        /// game, say -- the failure happens while the host method is being compiled, so it surfaces *here*,
+        /// in the caller. A player who installs half the files should get a game that still runs, not a crash.
+        /// </summary>
+        private static void Guard(Action entry)
+        {
+            try
+            {
+                entry();
+            }
+            catch (Exception exception)
+            {
+                try
+                {
+                    Console.Error.WriteLine("ZhaDai 钩子出错（游戏继续）：" + exception);
+                }
+                catch (Exception)
+                {
+                    // Nothing left to do: the host is already down for this frame.
+                }
+            }
         }
 
         /// <summary>

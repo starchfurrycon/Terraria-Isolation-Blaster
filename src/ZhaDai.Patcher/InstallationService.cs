@@ -282,6 +282,25 @@ namespace ZhaDai.Patcher
                     Directory.CreateDirectory(DataDirectory(terrariaExe));
                     File.Copy(pluginDll, runtimeBeside, true);
                     log.Add("已部署插件到 " + runtimeBeside);
+
+                    // The plugin is not one file: it links ZhaDai.Automation, and a missing dependency used to
+                    // take the game down with a FileNotFoundException inside the very first world frame. Copy
+                    // every sibling ZhaDai.* assembly it references, and refuse the install if one is absent --
+                    // failing here is a message, failing in game is a crash.
+                    foreach (var dependency in PluginDependencies(pluginDll))
+                    {
+                        var beside = Path.Combine(Path.GetDirectoryName(terrariaExe), dependency + ".dll");
+                        var source = Path.Combine(Path.GetDirectoryName(Path.GetFullPath(pluginDll)), dependency + ".dll");
+                        if (!File.Exists(source))
+                        {
+                            throw new PatchException("插件依赖 " + dependency + ".dll 不在 " +
+                                Path.GetDirectoryName(Path.GetFullPath(pluginDll)) +
+                                "，装进去也会在游戏里崩，先把它和插件放在一起。");
+                        }
+
+                        File.Copy(source, beside, true);
+                        log.Add("已部署依赖 " + beside);
+                    }
                 }
 
                 // 3. Patch into a temporary file and validate the written bytes.
@@ -631,6 +650,26 @@ namespace ZhaDai.Patcher
         {
             if (value == null) return "";
             return value.Replace("\\", "\\\\").Replace("\"", "\\\"");
+        }
+
+        /// <summary>
+        /// Names of the ZhaDai assemblies the plugin links, read from the assembly's own metadata. Only this
+        /// project's own assemblies are returned: framework references are the game's problem, not ours.
+        /// </summary>
+        private static IEnumerable<string> PluginDependencies(string pluginDll)
+        {
+            var seen = new HashSet<string>(StringComparer.OrdinalIgnoreCase);
+            using (var definition = Mono.Cecil.AssemblyDefinition.ReadAssembly(pluginDll))
+            {
+                foreach (var reference in definition.MainModule.AssemblyReferences)
+                {
+                    if (reference.Name.StartsWith("ZhaDai.", StringComparison.OrdinalIgnoreCase) &&
+                        seen.Add(reference.Name))
+                    {
+                        yield return reference.Name;
+                    }
+                }
+            }
         }
 
         private static InstallStatus New(InstallState state, string exe, string version, string hash, string message)

@@ -1,4 +1,4 @@
-# One command that reproduces every claim in the README.
+﻿# One command that reproduces every claim in the README.
 #
 # ASCII only on purpose: a PowerShell script with non-ASCII text has to be saved as UTF-8 with a BOM
 # or Windows PowerShell 5.1 mangles it, and that trap is not worth the risk in a verification script.
@@ -146,6 +146,27 @@ else {
         $output = & $patcher verify --terraria $Terraria --plugin $pluginDll 2>&1
         $output | Select-String -Pattern "^共核对|^结论" | ForEach-Object { Write-Host "  $($_.Line)" }
         return ($LASTEXITCODE -eq 0)
+    }
+
+    # 一次真实事故：插件自己部署好了，但它依赖的 ZhaDai.Automation.dll 没跟着进游戏目录，
+    # 结果进世界第一帧就 FileNotFoundException 把游戏带崩。安装器现在会照着程序集引用复制依赖，
+    # 这一步检查构建输出本身是完整的：插件旁边的每个 ZhaDai.* 引用都必须真的在旁边。
+    Invoke-Step "plugin payload carries its own dependencies" {
+        $pluginDir = Split-Path -Parent $pluginDll
+        $asm = [System.Reflection.Assembly]::ReflectionOnlyLoadFrom($pluginDll)
+        $refs = @($asm.GetReferencedAssemblies() | Where-Object { $_.Name -like 'ZhaDai.*' })
+        foreach ($r in $refs) {
+            $beside = Join-Path $pluginDir ($r.Name + '.dll')
+            $present = Test-Path -LiteralPath $beside
+            Write-Host "  dependency $($r.Name): $(if ($present) { 'present' } else { 'MISSING' })"
+            if (-not $present) { return $false }
+        }
+
+        if ($refs.Count -eq 0) {
+            Write-Host "  the plugin has no ZhaDai dependencies (nothing to carry)" -ForegroundColor Yellow
+        }
+
+        return $true
     }
 
     Invoke-Step "injection rehearsal on a copy, original hash unchanged" {

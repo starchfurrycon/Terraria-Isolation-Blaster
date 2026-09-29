@@ -1,0 +1,29 @@
+2026/9/29 12:20:28
+System.IO.FileNotFoundException: 未能加载文件或程序集“ZhaDai.Automation, Version=0.1.0.0, Culture=neutral, PublicKeyToken=null”或它的某一个依赖项。系统找不到指定的文件。
+文件名:“ZhaDai.Automation, Version=0.1.0.0, Culture=neutral, PublicKeyToken=null”
+   在 ZhaDai.Runtime.Host.Frame()
+   在 Terraria.Main.UpdateWorld_Players()
+   在 Terraria.Main.DoUpdateInWorld_Inner()
+   在 Terraria.Main.DoUpdateInWorld()
+   在 Terraria.Main.DoUpdate(GameTime& gameTime)
+   在 Terraria.Main.Update(GameTime gameTime)
+   在 Microsoft.Xna.Framework.Game.Tick()
+   在 Microsoft.Xna.Framework.Game.HostIdle(Object sender, EventArgs e)
+   在 Microsoft.Xna.Framework.GameHost.OnIdle()
+   在 Microsoft.Xna.Framework.WindowsGameHost.RunOneFrame()
+   在 Microsoft.Xna.Framework.WindowsGameHost.ApplicationIdle(Object sender, EventArgs e)
+   在 System.Windows.Forms.Application.ThreadContext.System.Windows.Forms.UnsafeNativeMethods.IMsoComponent.FDoIdle(Int32 grfidlef)
+   在 System.Windows.Forms.Application.ComponentManager.System.Windows.Forms.UnsafeNativeMethods.IMsoComponentManager.FPushMessageLoop(IntPtr dwComponentID, Int32 reason, Int32 pvLoopData)
+   在 System.Windows.Forms.Application.ThreadContext.RunMessageLoopInner(Int32 reason, ApplicationContext context)
+   在 System.Windows.Forms.Application.ThreadContext.RunMessageLoop(Int32 reason, ApplicationContext context)
+   在 System.Windows.Forms.Application.Run(Form mainForm)
+   在 Microsoft.Xna.Framework.WindowsGameHost.Run()
+   在 Microsoft.Xna.Framework.Game.RunGame(Boolean useBlockingRun)
+   在 Terraria.Program.RunGame()
+
+警告: 程序集绑定日志记录被关闭。
+要启用程序集绑定失败日志记录，请将注册表值 [HKLM\Software\Microsoft\Fusion!EnableLog] (DWORD)设置为 1。
+注意: 会有一些与程序集绑定失败日志记录关联的性能损失。
+要关闭此功能，请移除注册表值 [HKLM\Software\Microsoft\Fusion!EnableLog]。
+
+

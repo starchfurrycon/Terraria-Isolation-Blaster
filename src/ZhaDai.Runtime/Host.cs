@@ -46,8 +46,8 @@ namespace ZhaDai.Runtime
 
         private static bool enabled;
 
-        /// <summary>Key name from run.cfg that starts and stops the run, e.g. F8.</summary>
-        private static string hotkey = "F8";
+        /// <summary>Key name from run.cfg that starts and stops the run, e.g. F10.</summary>
+        private static string hotkey = "F10";
 
         private static bool hostKeyDownLastFrame;
 
@@ -431,6 +431,23 @@ namespace ZhaDai.Runtime
                     lines.Add("gravestones=" + status.GravestonesDug.ToString(CultureInfo.InvariantCulture));
                     lines.Add("lastSkip=" + status.LastSkip);
                     lines.Add("message=" + status.Message);
+                    lines.Add("hazardWaits=" + status.HazardWaits.ToString(CultureInfo.InvariantCulture));
+                    lines.Add("routes=" + status.RoutesPlanned.ToString(CultureInfo.InvariantCulture));
+                    lines.Add("routeRestarts=" + status.RouteRestarts.ToString(CultureInfo.InvariantCulture));
+                    lines.Add("routeDigs=" + status.RouteDigs.ToString(CultureInfo.InvariantCulture));
+                    lines.Add("routeNote=" + status.LastRouteNote);
+                    lines.Add("digsDone=" + status.DigsDone.ToString(CultureInfo.InvariantCulture) + "/" +
+                              status.DigsSkipped.ToString(CultureInfo.InvariantCulture));
+                    lines.Add("plugs=" + status.PlugsDone.ToString(CultureInfo.InvariantCulture) + "/" +
+                              status.PlugsSkipped.ToString(CultureInfo.InvariantCulture) + "/" +
+                              status.PlugsAlreadySolid.ToString(CultureInfo.InvariantCulture));
+                    lines.Add("retries=" + status.Retries.ToString(CultureInfo.InvariantCulture));
+                    lines.Add("ticks=" + status.Ticks.ToString(CultureInfo.InvariantCulture));
+
+                    foreach (KeyValuePair<SkipReason, int> pair in executor.SkipCounts)
+                    {
+                        lines.Add("skip." + pair.Key + "=" + pair.Value.ToString(CultureInfo.InvariantCulture));
+                    }
                 }
 
                 lines.Add("life=" + bridge.PlayerLife.ToString(CultureInfo.InvariantCulture) + "/" +

@@ -3,7 +3,7 @@
 # 特点：
 #   * 游戏本体复制到副本目录，插件只装进副本，Steam 里那份原版一动不动。
 #   * 存档（Worlds/Players/配置）复制到副本的 save 目录，用 -savedirectory 指过去。
-#   * 进世界后按 F8 开始接管，再按 F8 停止；死亡后自动继续，直到施工文件跑完或 maxdeaths 用完。
+#   * 进世界后按 F10 开始接管，再按 F10 停止；死亡后自动继续，直到施工文件跑完或 maxdeaths 用完。
 #   * 只写副本目录，脚本不碰用户既有存档（写入前有 Assert 拦截）。
 #
 # 用法：
@@ -16,10 +16,13 @@ param(
     [string]$World = '草剑挥打',
     [string]$Root = 'D:\zhadai-test',
     [string]$Terraria = 'D:\Program Files (x86)\Steam\steamapps\common\Terraria',
-    [string]$Hotkey = 'F8',
+    [string]$Hotkey = 'F10',
     [int]$MaxDeaths = 50,
     [int]$QuickCharges = 40,
-    [switch]$SkipGameCopy
+    [switch]$SkipGameCopy,
+
+    # 存档副本已存在时不要覆盖：你在副本里玩过的进度不该被我刷掉。
+    [switch]$SkipSaveCopy
 )
 
 $ErrorActionPreference = 'Stop'
@@ -80,14 +83,18 @@ if (-not (Test-Path -LiteralPath $copyExe)) { throw "副本里没有 Terraria.ex
 
 # 2) 存档副本
 Say ""
-Say "[2/5] 复制存档到 $saveCopy" 'White'
-Assert-InsideRoot $saveCopy
-if (Test-Path -LiteralPath $saveCopy) { Remove-Item -LiteralPath $saveCopy -Recurse -Force }
-New-Item -ItemType Directory -Path $saveCopy -Force | Out-Null
-foreach ($name in @('Worlds', 'Players')) {
-    $from = Join-Path $originalSave $name
-    if (Test-Path -LiteralPath $from) {
-        Copy-Item -LiteralPath $from -Destination (Join-Path $saveCopy $name) -Recurse -Force
+if ($SkipSaveCopy) {
+    Say "[2/5] 跳过存档复制（-SkipSaveCopy），沿用副本里现有存档" 'White'
+} else {
+    Say "[2/5] 复制存档到 $saveCopy" 'White'
+    Assert-InsideRoot $saveCopy
+    if (Test-Path -LiteralPath $saveCopy) { Remove-Item -LiteralPath $saveCopy -Recurse -Force }
+    New-Item -ItemType Directory -Path $saveCopy -Force | Out-Null
+    foreach ($name in @('Worlds', 'Players')) {
+        $from = Join-Path $originalSave $name
+        if (Test-Path -LiteralPath $from) {
+            Copy-Item -LiteralPath $from -Destination (Join-Path $saveCopy $name) -Recurse -Force
+        }
     }
 }
 
@@ -147,14 +154,18 @@ Say "  小样本：$charges 发雷管 -> plan-quick.zplan；整图 -> plan.zplan
 Say ""
 Say "[5/5] 写 run.cfg（进世界后按 $Hotkey 接管）" 'White'
 $cfg = @(
-    '# 进世界后按 ' + $Hotkey + ' 开始接管，再按一次停止；死亡后自动继续。',
+    # 括号不能省：@('a' + $x, 'b') 会被 PowerShell 读成 'a' + ($x, 'b')，数组被拼成一行。
+    ('# 进世界后按 ' + $Hotkey + ' 开始接管，再按一次停止；死亡后自动继续。'),
     'enabled=0',
     'plan=plan-quick.zplan',
     'allowexplosives=1',
-    'maxdeaths=' + $MaxDeaths,
+    ('maxdeaths=' + $MaxDeaths),
     'hostiledistance=14',
-    'hotkey=' + $Hotkey
+    ('hotkey=' + $Hotkey)
 )
+# 最后一道保险：拼接写错时数组会多出半截元素，这里直接按行数核对，宁可在生成时炸掉，
+# 也不要在游戏里读到一个残缺的配置。
+if ($cfg.Count -ne 7) { throw "run.cfg 生成出 $($cfg.Count) 行，应该 7 行：$($cfg -join ' | ')" }
 $cfgPath = Join-Path $runDir 'run.cfg'
 Assert-InsideRoot $cfgPath
 [System.IO.File]::WriteAllLines($cfgPath, $cfg, (New-Object System.Text.UTF8Encoding($true)))

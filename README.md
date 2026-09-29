@@ -91,10 +91,10 @@ pwsh -File tools/make-test-copy.ps1 -SkipGameCopy  # 只更新存档/插件/计�
 
 - `D:\zhadai-test\game`（副本游戏，已注入插件）、`D:\zhadai-test\save`（副本存档）
 - `start-test.cmd`：双击启动。**工作目录必须是副本目录**，否则副本一闪而过（脚本已处理）
-- `game\ZhaDai\run.cfg`：`plan=plan-quick.zplan`（40 发小样本）、`hotkey=F8`、`maxdeaths=50`
+- `game\ZhaDai\run.cfg`：`plan=plan-quick.zplan`（40 发小样本）、`hotkey=F10`、`maxdeaths=50`
 - `game\ZhaDai\plan.zplan`：整图（2,177 发）；想跑整图把 run.cfg 里的 plan 改一下，插件每秒重读
 
-`run.cfg` 现在多两个键：`hotkey=F8`（进世界后按一下开始、再按一下停止）与原有的 `plan=`/`enabled=`/
+`run.cfg` 现在多两个键：`hotkey=F10`（进世界后按一下开始、再按一下停止）与原有的 `plan=`/`enabled=`/
 `allowexplosives=`/`maxdeaths=`/`hostiledistance=`。带 `hotkey=` 时 `enabled=` 只在第一遍读到时生效，
 之后由按键说话（否则每秒重读配置会把刚开的接管又关掉）。
 
@@ -207,3 +207,13 @@ dotnet run  --project tests/ZhaDai.Core.Tests -c Release
 ## 许可
 
 MIT，见 `LICENSE`。这是个非官方工具，不包含也不分发任何游戏文件。相关工具与既有成果的说明见 `NOTICE.md`。
+### 真机测试与反馈
+
+1. 双击 `D:\zhadai-test\start-test.cmd`（副本游戏 + 副本存档，插件只装在副本里）。
+2. 单人游戏 -> 草剑挥打 -> 进世界后按 **F10** 开始接管，再按一次停止（原版 F8 是 packet stats）。
+3. 收集证据：`game\ZhaDai\runtime.log`、`game\ZhaDai\status.txt`；
+   也可以直接跑 `pwsh -File tools/analyze-run.ps1` 得到一份中文小结。
+
+插件是 `ZhaDai.Runtime.dll` + 它依赖的 `ZhaDai.Automation.dll` 两个文件，安装器会按程序集引用
+把 `ZhaDai.*` 依赖一起部署；缺任何一个它在 `install` 阶段就报错，不会等到进游戏才崩。
+注入失败也不会带走游戏：`Hooks` 的三个入口都有 try/catch 兜底。

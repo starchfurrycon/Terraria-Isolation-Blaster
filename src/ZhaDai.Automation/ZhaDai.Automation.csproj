@@ -6,7 +6,7 @@
     <TreatWarningsAsErrors>true</TreatWarningsAsErrors>
     <AssemblyName>ZhaDai.Automation</AssemblyName>
     <RootNamespace>ZhaDai.Automation</RootNamespace>
-    <Version>0.1.0-alpha</Version>
+    <Version>0.1.2-alpha</Version>
     <GenerateDocumentationFile>false</GenerateDocumentationFile>
   </PropertyGroup>
 

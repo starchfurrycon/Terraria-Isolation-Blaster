@@ -2,6 +2,22 @@
 
 ## 0.1.2-alpha
 
+**修掉真机崩溃：插件依赖没跟着装（用真机崩溃日志定位）**
+
+- 现象：副本进世界即闪退。游戏自己写的 `client-crashlog.txt` 写明
+  `FileNotFoundException: 未能加载文件或程序集"ZhaDai.Automation, Version=0.1.0.0"`，
+  栈顶是 `ZhaDai.Runtime.Host.Frame <- Terraria.Main.UpdateWorld_Players`。
+- 原因：安装器只把 `ZhaDai.Runtime.dll` 拷进游戏目录，它引用的 `ZhaDai.Automation.dll` 没拷。
+  程序集解析只看应用程序目录，这是注入方案最容易漏的一环。
+- 修法：安装时读插件程序集自己的引用表，把同目录下的 `ZhaDai.*` 依赖一并部署，缺任何一个直接在
+  安装阶段报错；`Hooks` 的三个入口套 try/catch（类型加载失败抛在调用方，宿主内的 try/catch 盖不住）；
+  `verify-all.ps1` 增加「插件载荷自带依赖」一步（现在 9 步全过）。原始崩溃日志存进 docs/evidence。
+- 热键从 F8 改成 **F10**：原版 F8 被 packet stats 界面占用。
+- 生成 run.cfg 的脚本修了 PowerShell 优先级坑（`@('a' + $x, 'b')` 会把数组拼成一行），
+  并在生成时按行数核对，宁可在生成时炸也不让游戏读到残缺配置。
+- 另加 `tools/analyze-run.ps1`：只读 `runtime.log`/`status.txt` 出一份中文小结
+  （进度、死亡、A* 次数、封堵、危险等待、跳过原因直方图），实测反馈直接用这个。
+
 **封堵清单瘦身，摆药换成全局覆盖贪心**
 
 - `belowWillClear` 修正：下方那格若本就是距离 0 的前沿格（计划不会去挖它），不再算作「即将挖空」，
@@ -20,7 +36,7 @@
 **测试副本与按键接管**
 
 - 	ools/make-test-copy.ps1：游戏本体 + 存档双副本，插件只装在副本里；start-test.cmd 双击即玩。
-- 运行时新增按键接管：un.cfg 里 hotkey=F8，进世界后按一下开始、再按一下停止；按键读
+- 运行时新增按键接管：`run.cfg` 里 hotkey=F10（原版 F8 被 packet stats 占用），进世界后按一下开始、再按一下停止；按键读
   Main.keyState（失焦时游戏自己清空它，不会误触发）。带 hotkey 时 enabled= 只生效一次，
   不跟按键抢开关。
 - 死亡后自动继续：记死亡、报位置、等复活、回到当前这一发（HandleDeath -> AwaitRespawn），

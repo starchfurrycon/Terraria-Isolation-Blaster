@@ -9,7 +9,7 @@
     <TreatWarningsAsErrors>true</TreatWarningsAsErrors>
     <AssemblyName>zhaodai</AssemblyName>
     <RootNamespace>ZhaDai.Cli</RootNamespace>
-    <Version>0.1.0-alpha</Version>
+    <Version>0.1.2-alpha</Version>
     <InvariantGlobalization>true</InvariantGlobalization>
   </PropertyGroup>
 
