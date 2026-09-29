@@ -1,0 +1,13 @@
+bin/
+obj/
+*.user
+*.suo
+.vs/
+artifacts/
+tmp/
+publish/
+*.binlog
+
+# Mono.Cecil and other third party binaries are fetched or copied locally, never committed.
+lib/
+src/*/lib/

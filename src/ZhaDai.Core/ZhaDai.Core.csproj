@@ -1,0 +1,16 @@
+<Project Sdk="Microsoft.NET.Sdk">
+
+  <PropertyGroup>
+    <TargetFramework>net8.0</TargetFramework>
+    <Nullable>enable</Nullable>
+    <ImplicitUsings>enable</ImplicitUsings>
+    <LangVersion>latest</LangVersion>
+    <TreatWarningsAsErrors>true</TreatWarningsAsErrors>
+    <EnforceCodeStyleInBuild>false</EnforceCodeStyleInBuild>
+    <RootNamespace>ZhaDai.Core</RootNamespace>
+    <AssemblyName>ZhaDai.Core</AssemblyName>
+    <Version>0.1.0-alpha</Version>
+    <Description>Offline containment planner: reads a vanilla Terraria world and derives a dynamite blasting plan.</Description>
+  </PropertyGroup>
+
+</Project>

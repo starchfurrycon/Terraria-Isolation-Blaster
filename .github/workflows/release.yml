@@ -1,0 +1,42 @@
+name: release
+
+on:
+  push:
+    tags: ["v*"]
+  workflow_dispatch:
+
+permissions:
+  contents: write
+
+jobs:
+  package:
+    runs-on: windows-latest
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: actions/setup-dotnet@v4
+        with:
+          dotnet-version: 8.0.x
+
+      - name: Publish CLI
+        run: dotnet publish src/ZhaDai.Cli -c Release -r win-x64 --self-contained false -o staging/cli
+
+      - name: Publish Manager
+        run: dotnet publish src/ZhaDai.Manager -c Release -r win-x64 --self-contained false -o staging/ui
+
+      - name: Test before packaging
+        run: dotnet run --project tests/ZhaDai.Core.Tests -c Release
+
+      - name: Zip
+        shell: pwsh
+        run: |
+          $version = "${{ github.ref_name }}"
+          if (-not $version) { $version = "dev" }
+          Compress-Archive -Path staging/cli/* -DestinationPath "artifacts/ZhaDai-cli-$version-win-x64.zip" -Force
+          Compress-Archive -Path staging/ui/* -DestinationPath "artifacts/ZhaDai-ui-$version-win-x64.zip" -Force
+          Get-ChildItem artifacts
+
+      - uses: softprops/action-gh-release@v2
+        with:
+          files: artifacts/*.zip
+          generate_release_notes: true
