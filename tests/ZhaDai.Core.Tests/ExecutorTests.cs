@@ -22,6 +22,8 @@ internal static class ExecutorTests
         HostileHold(check);
         DrowningSurfaces(check);
         RetreatsThroughRock(check);
+        FenceDigs(check);
+        RemovalClassification(check);
         ExecutionFileRoundTrip(check);
     }
 
@@ -108,8 +110,11 @@ internal static class ExecutorTests
         dry.DynamiteCount = 0;
         Drive(broke, dry, 3000);
         check(
-            broke.Status.Skipped == 1 && broke.Status.LastSkip == SkipReason.NoDynamite,
-            $"没有雷管时不硬炸（实际 {broke.Status.LastSkip}）");
+            broke.Status.Fired == 0 && broke.Status.LastSkip == SkipReason.NotEnoughSupplies,
+            $"没有雷管时直接拒绝接管、一发都不点（实际 {broke.Status.LastSkip}，开了 {broke.Status.Fired} 发）");
+        check(
+            broke.Status.State == ExecutorState.Halted && broke.Status.AuditMessage.Contains("雷管"),
+            $"拒绝接管时说明了缺什么（{broke.Status.AuditMessage}）");
     }
 
     private static void CheckSkip(Action<bool, string> check, string description, Action<ExecutionPlan> mutate, SkipReason expected)
@@ -219,8 +224,89 @@ internal static class ExecutorTests
         check(executor.Status.Deaths == 0 && executor.Status.Fired == runnable.Charges.Count, "读回来的计划能直接跑完且不自杀");
     }
 
-    private static ExecutionPlan MakePlan(int count, int standOffset)
+    /// <summary>
+    /// The pickaxe half of the plan: the audit refuses a run whose pickaxe is below the planned power,
+    /// and a run that does have the pickaxe walks to each dig target and finishes it before the first
+    /// charge is armed.
+    /// </summary>
+    private static void FenceDigs(Action<bool, string> check)
     {
+        ExecutionPlan plan = MakePlan(1, standOffset: 10);
+        plan.PickPower = 100;
+        plan.Digs.Add(new ZhaDai.Automation.DigOrder { X = 45, Y = 19, Type = 107, Hits = 3, Reason = "blastimmune" });
+        plan.Digs.Add(new ZhaDai.Automation.DigOrder { X = 50, Y = 19, Type = 226, Hits = 0, Reason = "blocked" });
+
+        FakeBridge weak = new() { BestPickPower = 35 };
+        BlastExecutor refused = new(plan, new ExecutorOptions());
+        Drive(refused, weak, 2000);
+        check(
+            refused.Status.State == ExecutorState.Halted &&
+            refused.Status.LastSkip == SkipReason.NotEnoughSupplies &&
+            refused.Status.Fired == 0 &&
+            refused.Status.AuditMessage.Contains("镐力"),
+            $"镐力不够时拒绝接管（{refused.Status.AuditMessage}）");
+
+        FakeBridge strong = new();
+        strong.FillSolid(45, 19, 45, 19);
+        strong.FillSolid(50, 19, 50, 19);
+        BlastExecutor executor = new(plan, new ExecutorOptions());
+        Drive(executor, strong, 40000);
+        check(
+            executor.Status.DigsDone == 1 && executor.Status.DigsSkipped == 0,
+            $"该挖的封带格被挖掉了（挖成 {executor.Status.DigsDone}，跳过 {executor.Status.DigsSkipped}）");
+        check(
+            !strong.IsSolid(45, 19),
+            "挖过的那一格在世界里真的没了");
+        check(
+            strong.IsSolid(50, 19) && executor.Status.Fired == 1,
+            $"炸不掉的那格只记录不执行（是否还在：{strong.IsSolid(50, 19)}），雷管照常施工（{executor.Status.Fired} 发）");
+        check(
+            executor.Status.AuditMessage.Contains("雷管") && executor.Status.AuditMessage.Contains("镐力"),
+            $"盘点结论写进了状态（{executor.Status.AuditMessage}）");
+    }
+
+    /// <summary>
+    /// Every tile the planner might have to route around, checked against the transcribed vanilla
+    /// tables: what dynamite leaves, what a pickaxe of a given power can still take, and what neither
+    /// tool ever removes.
+    /// </summary>
+    private static void RemovalClassification(Action<bool, string> check)
+    {
+        check(TileCatalog.IsProtectedStructure(21), "箱子算结构物，默认要保护");
+        check(TileCatalog.IsProtectedStructure(10), "门算结构物");
+        check(!TileCatalog.IsProtectedStructure(32), "腐化荆棘不算结构物：它自己就是传播源，必须清掉");
+        check(!TileCatalog.IsProtectedStructure(52), "藤蔓不算结构物");
+        check(!TileCatalog.IsProtectedStructure(3), "普通草叶不算结构物：到处都是，保护它等于全图改挖");
+        check(TileCatalog.IsPlayerBuilt(30), "木板算玩家建材");
+        check(!TileCatalog.IsPlayerBuilt(1), "石头是天然地形，随便炸");
+        check(!TileCatalog.IsPlayerBuilt(107), "钴矿是天然矿石，不是玩家盖的");
+
+        check(TileCatalog.MinPickPower(25) == 65, $"黑檀石要 65% 镐力（实际 {TileCatalog.MinPickPower(25)}）");
+        check(TileCatalog.MinPickPower(226) == 210, $"神庙砖要 210% 镐力（实际 {TileCatalog.MinPickPower(226)}）");
+        check(
+            TileCatalog.DigHits(226, 100) == 0 && TileCatalog.DigHits(226, 210) > 0,
+            "100% 镐子挖不动神庙砖，210% 的锯镐可以");
+        check(
+            TileCatalog.DigHits(211, 150) == 0 && TileCatalog.DigHits(211, 200) > 0,
+            "叶绿矿要 200% 镐力，150% 挖不动");
+        check(TileCatalog.DigHits(3, 35) == 1, $"野草在 tileNoFail 里，一镐就没（实际 {TileCatalog.DigHits(3, 35)} 镐）");
+        check(TileCatalog.DigHits(2, 35) == 3, $"草皮按镐力算：35% 镐子要 3 下（实际 {TileCatalog.DigHits(2, 35)}）");
+        check(TileCatalog.DigHits(2, 100) == 1, "100% 镐子一镐铲掉草皮");
+        check(
+            TileCatalog.Classify(26, hardMode: true, downedGolemBoss: true, getGoodWorld: false, pickPower: 210) == RemovalMethod.Blocked,
+            "祭坛不是镐子的目标，也不是雷管的目标：只能报告");
+        check(
+            TileCatalog.Classify(107, hardMode: true, downedGolemBoss: false, getGoodWorld: false, pickPower: 100) == RemovalMethod.Dig,
+            "钴矿雷管炸不掉，但 100% 镐子挖得动：归镐子");
+        check(
+            TileCatalog.Classify(107, hardMode: true, downedGolemBoss: false, getGoodWorld: false, pickPower: 65) == RemovalMethod.Blocked,
+            "镐力不够时钴矿两样都处理不掉，必须报出来");
+        check(
+            TileCatalog.Classify(1, hardMode: false, downedGolemBoss: false, getGoodWorld: false, pickPower: 35) == RemovalMethod.Blast,
+            "普通石头交给雷管");
+    }
+
+    private static ExecutionPlan MakePlan(int count, int standOffset)    {
         ExecutionPlan plan = new()
         {
             Width = 400,

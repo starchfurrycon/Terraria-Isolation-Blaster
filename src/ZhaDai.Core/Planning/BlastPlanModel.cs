@@ -54,6 +54,21 @@ public sealed record BlastPlanOptions
     /// <summary>Extra rectangles to treat as infection, e.g. the analyzer's predicted pre-hardmode V bands.</summary>
     public IReadOnlyList<TileRect> ExtraSeedRects { get; init; } = [];
 
+    /// <summary>
+    /// How much collateral damage a charge is allowed to do. Dynamite is indiscriminate: it removes
+    /// everything in a seven tile disc, not just the fence tiles it was aimed at, so a placement that
+    /// seals better by flattening somebody's house has to be refused on purpose.
+    /// </summary>
+    public ProtectionLevel Protection { get; init; } = ProtectionLevel.Strict;
+
+    /// <summary>
+    /// Pick power the plan assumes when deciding whether a tile that survives dynamite can be dug out
+    /// instead. The default of 100 is the Molten Pickaxe, the best a pre-hardmode character can have;
+    /// raise it to 210 (Picksaw) to plan for the endgame, lower it to 65 (Nightmare Pickaxe) for a run
+    /// that intends to fight the wall of flesh with a mid-game tool.
+    /// </summary>
+    public int PickPower { get; init; } = TileCatalog.PreHardmodePickPower;
+
     /// <summary>Refuse to emit a plan with more separate fences than this; a sign the world is far from contained.</summary>
     public int MaxSections { get; init; } = 4000;
 
@@ -87,8 +102,49 @@ public sealed record BlastPlanOptions
         {
             throw new ArgumentOutOfRangeException(nameof(VineReach), VineReach, "VineReach cannot be negative.");
         }
+
+        if (PickPower < 1 || PickPower > TileCatalog.StrongestPickPower)
+        {
+            throw new ArgumentOutOfRangeException(
+                nameof(PickPower),
+                PickPower,
+                $"Pick power must be between 1 and {TileCatalog.StrongestPickPower} (the Picksaw, the strongest " +
+                "gate any tile asks for).");
+        }
     }
 }
+
+/// <summary>How much of the world a charge is allowed to break on its way to the fence.</summary>
+public enum ProtectionLevel
+{
+    /// <summary>Never blast a structure or a crafted building material: dig those fence tiles instead.</summary>
+    Strict,
+
+    /// <summary>Protect chests, doors, furniture and platforms, but plain crafted blocks may be blasted.</summary>
+    Structures,
+
+    /// <summary>No protection: place charges for the lowest charge count and report what they hit.</summary>
+    None,
+}
+
+/// <summary>Why a fence tile has to be dug rather than blown up.</summary>
+public enum DigReason
+{
+    /// <summary>Dynamite leaves the tile standing (hardmode ore, dungeon brick, Lihzahrd brick, chest).</summary>
+    BlastImmune,
+
+    /// <summary>A charge would have to flatten something a player built to reach it.</summary>
+    Collateral,
+
+    /// <summary>The tile is a thorn or vine that the blast would remove, but nothing reached it.</summary>
+    Uncovered,
+
+    /// <summary>Neither tool can remove it with the assumed pick power; reported, never executed.</summary>
+    Blocked,
+}
+
+/// <summary>A single tile the pickaxe has to remove, in the order the executor reaches it.</summary>
+public sealed record DigOrder(int X, int Y, ushort Type, int Hits, DigReason Reason);
 
 /// <summary>One Dynamite detonation.</summary>
 public sealed record BlastCharge(
@@ -105,7 +161,9 @@ public sealed record BlastCharge(
     bool ExplosivesInBlast,
     int StandX,
     int StandY,
-    bool RetreatAvailable);
+    bool RetreatAvailable,
+    int ProtectedTilesInBlast = 0,
+    int PlayerBlocksInBlast = 0);
 
 /// <summary>One fence: the cleared band around a single infection front.</summary>
 public sealed record FenceSection(
@@ -119,7 +177,9 @@ public sealed record FenceSection(
     double EnclosedWidthWorldPercent,
     double EnclosedInfectablePercent,
     bool WithinAnalyzerLimits,
-    bool SealedByFloodVerification);
+    bool SealedByFloodVerification,
+    int DigTiles = 0,
+    int BlockedTiles = 0);
 
 /// <summary>Totals for the whole plan.</summary>
 public sealed record BlastPlanSummary(
@@ -143,7 +203,14 @@ public sealed record BlastPlanSummary(
     int BlastImmuneTilesInBlast,
     bool AllSectionsSealed,
     int VineAnchorTiles,
-    long EstimatedPlayerSeconds);
+    long EstimatedPlayerSeconds,
+    int DigTiles = 0,
+    int BlockedTiles = 0,
+    int RequiredPickPower = 0,
+    int ChargesWithCollateral = 0,
+    int ProtectedTilesInBlast = 0,
+    int PlayerBlocksInBlast = 0,
+    long EstimatedDigSeconds = 0);
 
 /// <summary>
 /// A downsampled picture of the world for the map: four flag bits per cell.
@@ -159,4 +226,9 @@ public sealed record BlastPlan(
     IReadOnlyList<FenceSection> Sections,
     IReadOnlyList<BlastCharge> Charges,
     IReadOnlyList<string> Notes,
-    PlanOverview? Overview = null);
+    PlanOverview? Overview = null,
+    IReadOnlyList<DigOrder>? Digs = null)
+{
+    /// <summary>Tiles the pickaxe has to remove; empty when dynamite covers the whole fence.</summary>
+    public IReadOnlyList<DigOrder> DigOrders => Digs ?? [];
+}

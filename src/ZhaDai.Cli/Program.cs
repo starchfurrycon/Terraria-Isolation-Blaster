@@ -88,6 +88,8 @@ internal static class Program
             MaxSections = options.MaxSections,
             VineReach = options.VineReach,
             ExtraSeedRects = options.ExtraSeedRects,
+            Protection = options.Protection,
+            PickPower = options.PickPower,
         };
 
         Stopwatch watch = Stopwatch.StartNew();
@@ -155,6 +157,8 @@ internal static class Program
             MaxSections = options.MaxSections,
             VineReach = options.VineReach,
             ExtraSeedRects = options.ExtraSeedRects,
+            Protection = options.Protection,
+            PickPower = options.PickPower,
         };
 
         LoadedWorld world = WorldFileReader.Read(worldPath);
@@ -276,6 +280,8 @@ internal static class Program
               --merge-gap=<格数>   多少格以内的感染源并成同一段，默认 3；调大省炸药但封得更多
               --max-sections=<n>   允许的最大段数，默认 4000
               --vine-reach=<格数>  藤蔓能顺着空气向下带多远，默认 13；设 0 只按普通三格扩散封带
+              --protect=<级别>     strict（默认，结构物与玩家建材都不炸，改挖）、structures、none
+              --pick=<镐力>        规划时假设的镐力（默认 100，熔岩镐）；影响哪些格子只能靠镐子
                                     （最快最省，但对会长藤蔓的带草前沿不保险）
               --also-rect=x0,y0,x1,y1
                                    额外把一块矩形当作感染源（可重复），
@@ -320,6 +326,12 @@ internal static class Program
         public int MaxSections { get; private set; } = 4000;
 
         public int VineReach { get; private set; } = InfectionModel.VineDownwardReach;
+
+        /// <summary>How much collateral damage a charge may do; see <see cref="ProtectionLevel"/>.</summary>
+        public ProtectionLevel Protection { get; private set; } = ProtectionLevel.Strict;
+
+        /// <summary>Pick power the plan assumes when a tile has to be dug instead of blasted.</summary>
+        public int PickPower { get; private set; } = TileCatalog.PreHardmodePickPower;
 
         public List<TileRect> ExtraSeedRects { get; } = [];
 
@@ -373,6 +385,12 @@ internal static class Program
                     case "vine-reach":
                         options.VineReach = ParseInt(name, value);
                         break;
+                    case "protect":
+                        options.Protection = ParseProtection(value);
+                        break;
+                    case "pick":
+                        options.PickPower = ParseInt(name, value);
+                        break;
                     case "also-rect":
                         options.ExtraSeedRects.Add(ParseRect(value));
                         break;
@@ -396,6 +414,14 @@ internal static class Program
 
             return parsed;
         }
+
+        private static ProtectionLevel ParseProtection(string? value) => value switch
+        {
+            "strict" or null => ProtectionLevel.Strict,
+            "structures" => ProtectionLevel.Structures,
+            "none" => ProtectionLevel.None,
+            _ => throw new ArgumentException("--protect 只认 strict、structures、none。"),
+        };
 
         private static TileRect ParseRect(string? value)
         {

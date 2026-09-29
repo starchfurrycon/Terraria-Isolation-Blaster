@@ -91,6 +91,9 @@ public static class BlastPlanner
         List<int> blastTouched = [];
         int[] blastOffsets = BuildBlastOffsets(opts.BlastRadius);
 
+        // What a charge would break beyond the fence: 0 harmless, 1 crafted block, 2 structure.
+        byte[] collateral = BuildCollateralMap(tiles);
+
         List<FenceSection> sections = [];
         List<BlastCharge> charges = [];
         int mixedSections = 0;
@@ -106,6 +109,7 @@ public static class BlastPlanner
         long blastDestroyed = 0;
         int blastImmuneInBlast = 0;
         int vineAnchors = 0;
+        FenceTally totals = new();
 
         foreach (SeedCluster cluster in clusters)
         {
@@ -181,6 +185,66 @@ public static class BlastPlanner
                 }
             }
 
+            // Classify every fence tile by what can actually remove it before the flood check runs. A
+            // tile that neither dynamite nor the assumed pickaxe can take out is cleared from the fence
+            // mask so the verification reports the leak it really is: leaving it in the mask would make
+            // a segment look sealed while the tile sits there spreading.
+            int sectionDig = 0;
+            int sectionBlocked = 0;
+            bool hardMode = model.World.Metadata.HardMode;
+            bool getGoodWorld = model.World.Metadata.GetGoodWorld;
+            for (int y = workRegion.MinY; y <= workRegion.MaxY; y++)
+            {
+                int row = y * width;
+                for (int x = workRegion.MinX; x <= workRegion.MaxX; x++)
+                {
+                    int index = row + x;
+                    if (fence[index] == 0)
+                    {
+                        continue;
+                    }
+
+                    ushort type = tiles.TypeAt(index);
+                    if (type == 0)
+                    {
+                        fence[index] = 0;
+                        continue;
+                    }
+
+                    RemovalMethod method = TileCatalog.Classify(type, hardMode, downedGolemBoss: false, getGoodWorld, opts.PickPower);
+                    if (method == RemovalMethod.Blast)
+                    {
+                        continue;
+                    }
+
+                    if (method == RemovalMethod.Blocked)
+                    {
+                        sectionBlocked++;
+                        totals.BlockedTiles++;
+                        totals.RequiredPickPower = Math.Max(
+                            totals.RequiredPickPower,
+                            Math.Min(TileCatalog.MinPickPower(type), TileCatalog.StrongestPickPower));
+                        totals.Digs.Add(new DigOrder(x, y, type, 0, DigReason.Blocked));
+                        fence[index] = 0;
+                        continue;
+                    }
+
+                    // Blast immune but diggable: no charge can help, so the pickaxe owns this tile and
+                    // the charge search must not count it as covered.
+                    int hits = TileCatalog.DigHits(type, opts.PickPower);
+                    sectionDig++;
+                    totals.DigTiles++;
+                    totals.DigHits += hits;
+                    totals.RequiredPickPower = Math.Max(totals.RequiredPickPower, TileCatalog.MinPickPower(type));
+                    totals.Digs.Add(new DigOrder(x, y, type, hits, DigReason.BlastImmune));
+                    if (covered[index] == 0)
+                    {
+                        covered[index] = 1;
+                        coveredTouched.Add(index);
+                    }
+                }
+            }
+
             workspace.ResetDistance(ringRegion);
 
             // Verify against the real graph instead of trusting the construction argument.
@@ -196,10 +260,12 @@ public static class BlastPlanner
                 coverCount,
                 coverTouched,
                 blastOffsets,
+                collateral,
                 model,
                 tiles,
                 opts,
-                workRegion);
+                workRegion,
+                totals);
 
             TallyHazards(
                 sectionCharges,
@@ -238,7 +304,9 @@ public static class BlastPlanner
                 EnclosedWidthWorldPercent: Math.Round(widthPercent, 3),
                 EnclosedInfectablePercent: Math.Round(infectablePercent, 3),
                 WithinAnalyzerLimits: withinLimits,
-                SealedByFloodVerification: isSealed));
+                SealedByFloodVerification: isSealed,
+                DigTiles: sectionDig,
+                BlockedTiles: sectionBlocked));
 
             charges.AddRange(sectionCharges);
         }
@@ -275,7 +343,14 @@ public static class BlastPlanner
             BlastImmuneTilesInBlast: blastImmuneInBlast,
             AllSectionsSealed: allSealed,
             VineAnchorTiles: vineAnchors,
-            EstimatedPlayerSeconds: EstimateSeconds(charges.Count, opts));
+            EstimatedPlayerSeconds: EstimateSeconds(charges.Count, opts),
+            DigTiles: totals.DigTiles,
+            BlockedTiles: totals.BlockedTiles,
+            RequiredPickPower: totals.RequiredPickPower,
+            ChargesWithCollateral: totals.ChargesWithCollateral,
+            ProtectedTilesInBlast: totals.ProtectedInBlast,
+            PlayerBlocksInBlast: totals.PlayerBlocksInBlast,
+            EstimatedDigSeconds: EstimateDigSeconds(totals));
 
         if (vineAnchors > 0)
         {
@@ -301,8 +376,10 @@ public static class BlastPlanner
             $"（{opts.DynamiteFuseTicks / 60d:0.#} 秒）结束前退到 {opts.BlastRadius + opts.RetreatMarginTiles} 格外；" +
             "计划为每发标注了它之前已经炸开的撤离点。");
 
+        AddRemovalNotes(notes, totals, opts);
+
         PlanOverview overview = BuildOverview(model, fence, opts.Clearance);
-        return new BlastPlan(world.Metadata, opts, summary, sections, charges, notes, overview);
+        return new BlastPlan(world.Metadata, opts, summary, sections, charges, notes, overview, totals.Digs);
     }
 
     /// <summary>Downsamples the world so the map does not need the whole tile grid.</summary>
@@ -424,6 +501,89 @@ public static class BlastPlanner
     }
 
     /// <summary>
+    /// Pickaxe time for the tiles dynamite does not handle. A swing is about a third of a second and
+    /// the player also has to walk between tiles, so the estimate is hits plus travel and is meant to
+    /// answer "is digging this cheaper than blasting it", not to be a stopwatch.
+    /// </summary>
+    private static long EstimateDigSeconds(FenceTally totals)
+    {
+        double seconds = (totals.DigHits * 0.35) + (totals.DigTiles * 0.5);
+        return (long)Math.Ceiling(seconds);
+    }
+
+    /// <summary>
+    /// Explains the split between what dynamite removes and what the pickaxe has to, and refuses to
+    /// pretend a fence is finished when a tile comes out with neither tool.
+    /// </summary>
+    private static void AddRemovalNotes(List<string> notes, FenceTally totals, BlastPlanOptions opts)
+    {
+        int blocked = totals.Digs.Count(dig => dig.Reason == DigReason.Blocked);
+        int collateral = totals.Digs.Count(dig => dig.Reason == DigReason.Collateral);
+        int immune = totals.Digs.Count(dig => dig.Reason == DigReason.BlastImmune);
+
+        if (totals.DigTiles > 0)
+        {
+            string why = string.Join(
+                "、",
+                new[]
+                {
+                    immune > 0 ? $"{immune} 格雷管炸不掉" : null,
+                    collateral > 0 ? $"{collateral} 格炸过去会打到建筑" : null,
+                }.Where(part => part is not null));
+
+            notes.Add(
+                $"封带里有 {totals.DigTiles} 格要靠镐子（{why}），按当前设定的 " +
+                $"{opts.PickPower}% 镐力估算 {totals.DigHits} 次挥镐、约 {EstimateDigSeconds(totals) / 60d:0.#} 分钟。" +
+                $"这批格子需要镐力至少 {totals.RequiredPickPower}%" +
+                (totals.RequiredPickPower > opts.PickPower
+                    ? "，比当前设定更高：换把更好的镐子，或者把这些格子留给下一趟。"
+                    : "。"));
+        }
+
+        if (blocked > 0)
+        {
+            string sample = string.Join(
+                "；",
+                totals.Digs
+                    .Where(dig => dig.Reason == DigReason.Blocked)
+                    .Take(5)
+                    .Select(dig => $"({dig.X},{dig.Y}) 物块 {dig.Type}"));
+
+            notes.Add(
+                $"**有 {blocked} 格镐子和雷管都处理不掉**（前几格：{sample}）。这些格子已经按「炸不掉」从封带里剔除，" +
+                "所以对应的隔离段复核为未封住：要么绕开它们改线，要么换镐力更高的工具再算一次。" +
+                "祭坛、神庙砖（需要 210% 镐力）、叶绿矿（200%）是常见原因。");
+        }
+
+        if (totals.ChargesWithCollateral > 0)
+        {
+            notes.Add(
+                $"有 {totals.ChargesWithCollateral} 发雷管的爆破范围会打到 {totals.ProtectedInBlast} 格家具/容器/门这类结构、" +
+                $"{totals.PlayerBlocksInBlast} 格玩家建材（木板、砖、玻璃等）。当前保护级别是 {DescribeProtection(opts.Protection)}：" +
+                "严格级别下这些摆位根本不会被采用，所以出现这个数字说明附近所有位置都躲不开，请人工看一眼这几发再施工。");
+        }
+        else if (opts.Protection != ProtectionLevel.None)
+        {
+            notes.Add(
+                $"按 {DescribeProtection(opts.Protection)} 保护级别摆位：每一发雷管的爆破范围都避开了结构物与玩家建材，" +
+                "炸不到房子、箱子、门、家具和平台的格子上（原版没有记录物块是谁放的，" +
+                "这里是按材质表判断的，木板/灰砖/玻璃这类建材会被当成玩家建筑）。");
+        }
+
+        if (totals.DigTiles == 0 && blocked == 0)
+        {
+            notes.Add("这条隔离带全部由雷管完成，不需要额外挥镐（走到爆破点的通道另算）。");
+        }
+    }
+
+    private static string DescribeProtection(ProtectionLevel level) => level switch
+    {
+        ProtectionLevel.Strict => "严格（结构和玩家建材都不炸，改挖）",
+        ProtectionLevel.Structures => "结构优先（保护家具与容器，允许炸掉玩家自建的普通方块）",
+        _ => "无保护（按最少雷管摆位，误伤只做统计）",
+    };
+
+    /// <summary>
     /// Every tile offset a blast reaches. <c>Projectile.ExplodeTiles</c> destroys a tile when
     /// <c>sqrt(dx^2 + dy^2) &lt; radius</c>, so the test uses the squared radius with a strict
     /// less-than: offset 6 along an axis is reachable, offset 7 is not.
@@ -454,20 +614,25 @@ public static class BlastPlanner
     /// nearest the seed tile, which keeps placement deterministic and keeps the charge next to the
     /// band it was found on.
     /// </summary>
-    private static (int X, int Y) FindBestPlacement(
+    private static (int X, int Y, int Structures, int PlayerBlocks, bool Found) FindBestPlacement(
         int x,
         int y,
         byte[] fence,
         byte[] covered,
         int[] blastOffsets,
+        byte[] collateral,
         int width,
         int height,
-        int radius)
+        int radius,
+        ProtectionLevel protection)
     {
         int bestX = x;
         int bestY = y;
         int bestScore = -1;
         int bestDistance = int.MaxValue;
+        int bestStructures = int.MaxValue;
+        int bestPlayerBlocks = int.MaxValue;
+        bool found = false;
 
         for (int cy = y - radius; cy <= y + radius; cy++)
         {
@@ -484,6 +649,8 @@ public static class BlastPlanner
                 }
 
                 int score = 0;
+                int structures = 0;
+                int playerBlocks = 0;
                 foreach (int offset in blastOffsets)
                 {
                     int nx = cx + OffsetX(offset);
@@ -498,6 +665,16 @@ public static class BlastPlanner
                     {
                         score++;
                     }
+
+                    switch (collateral[neighbour])
+                    {
+                        case 2:
+                            structures++;
+                            break;
+                        case 1:
+                            playerBlocks++;
+                            break;
+                    }
                 }
 
                 if (score == 0)
@@ -508,17 +685,35 @@ public static class BlastPlanner
                 int dx = cx - x;
                 int dy = cy - y;
                 int distance = (dx * dx) + (dy * dy);
-                if (score > bestScore || (score == bestScore && distance < bestDistance))
+                bool better;
+                if (protection == ProtectionLevel.None)
+                {
+                    better = score > bestScore || (score == bestScore && distance < bestDistance);
+                }
+                else
+                {
+                    // Collateral first, coverage second: a charge that reaches one more fence tile by
+                    // taking a wall out of somebody's house is not the better charge.
+                    better = structures < bestStructures ||
+                        (structures == bestStructures && playerBlocks < bestPlayerBlocks) ||
+                        (structures == bestStructures && playerBlocks == bestPlayerBlocks &&
+                            (score > bestScore || (score == bestScore && distance < bestDistance)));
+                }
+
+                if (better)
                 {
                     bestScore = score;
                     bestDistance = distance;
+                    bestStructures = structures;
+                    bestPlayerBlocks = playerBlocks;
                     bestX = cx;
                     bestY = cy;
+                    found = true;
                 }
             }
         }
 
-        return (bestX, bestY);
+        return (bestX, bestY, bestStructures == int.MaxValue ? 0 : bestStructures, bestPlayerBlocks == int.MaxValue ? 0 : bestPlayerBlocks, found);
     }
 
     private static int OffsetX(int packed) => (short)(packed & 0xFFFF);
@@ -533,12 +728,15 @@ public static class BlastPlanner
         byte[] coverCount,
         List<int> coverTouched,
         int[] blastOffsets,
+        byte[] collateral,
         InfectionModel model,
         TileGrid tiles,
         BlastPlanOptions opts,
-        TileRect workRegion)
+        TileRect workRegion,
+        FenceTally totals)
     {
         List<(int X, int Y)> placed = [];
+        Dictionary<(int X, int Y), (int Structures, int PlayerBlocks)> placementDamage = [];
         int width = tiles.Width;
         int height = tiles.Height;
 
@@ -558,17 +756,59 @@ public static class BlastPlanner
                 // charge spends half its radius on the infection side. Searching the surrounding
                 // window for the position that clears the most still-uncovered band tiles is what
                 // turns a band into a few large bites instead of one charge per few tiles.
-                (int bestX, int bestY) = FindBestPlacement(
+                (int bestX, int bestY, int structures, int playerBlocks, bool found) = FindBestPlacement(
                     x,
                     y,
                     fence,
                     covered,
                     blastOffsets,
+                    collateral,
                     width,
                     height,
-                    opts.BlastRadius);
+                    opts.BlastRadius,
+                    opts.Protection);
+
+                bool refuse = !found ||
+                    (opts.Protection == ProtectionLevel.Strict && (structures > 0 || playerBlocks > 0)) ||
+                    (opts.Protection == ProtectionLevel.Structures && structures > 0);
+
+                if (refuse)
+                {
+                    // Either nothing in range clears this tile without wrecking something, or the best
+                    // available placement does wreck something and the caller asked us not to. Both
+                    // answers are the same: the pickaxe takes these tiles instead of dynamite. Digging
+                    // costs time, blasting costs somebody's house, and time is the cheaper currency.
+                    foreach (int offset in blastOffsets)
+                    {
+                        int nx = bestX + OffsetX(offset);
+                        int ny = bestY + OffsetY(offset);
+                        if ((uint)nx >= (uint)width || (uint)ny >= (uint)height)
+                        {
+                            continue;
+                        }
+
+                        int neighbour = (ny * width) + nx;
+                        if (fence[neighbour] == 0 || covered[neighbour] != 0)
+                        {
+                            continue;
+                        }
+
+                        covered[neighbour] = 1;
+                        coveredTouched.Add(neighbour);
+                        RegisterDig(tiles, neighbour, nx, ny, opts.PickPower, DigReason.Collateral, totals);
+                    }
+
+                    continue;
+                }
 
                 placed.Add((bestX, bestY));
+                placementDamage[(bestX, bestY)] = (structures, playerBlocks);
+                if (structures > 0 || playerBlocks > 0)
+                {
+                    totals.ChargesWithCollateral++;
+                    totals.ProtectedInBlast += structures;
+                    totals.PlayerBlocksInBlast += playerBlocks;
+                }
 
                 foreach (int offset in blastOffsets)
                 {
@@ -732,6 +972,7 @@ public static class BlastPlanner
             }
 
             (int standX, int standY, bool retreat) = FindRetreat(ordered, order, opts);
+            placementDamage.TryGetValue((x, y), out (int Structures, int PlayerBlocks) damage);
             result.Add(new BlastCharge(
                 Order: order + 1,
                 X: x,
@@ -746,10 +987,89 @@ public static class BlastPlanner
                 ExplosivesInBlast: explosives,
                 StandX: standX,
                 StandY: standY,
-                RetreatAvailable: retreat));
+                RetreatAvailable: retreat,
+                ProtectedTilesInBlast: damage.Structures,
+                PlayerBlocksInBlast: damage.PlayerBlocks));
         }
 
         return result;
+    }
+
+    /// <summary>
+    /// Per-tile collateral class for every active tile: 0 worth nothing, 1 a crafted building block,
+    /// 2 a structure (chest, door, furniture, platform, altar). Read once per plan because the charge
+    /// search looks at the same tiles over and over.
+    /// </summary>
+    private static byte[] BuildCollateralMap(TileGrid tiles)
+    {
+        byte[] map = new byte[tiles.Count];
+        for (int index = 0; index < map.Length; index++)
+        {
+            if (!tiles.ActiveAt(index))
+            {
+                continue;
+            }
+
+            ushort type = tiles.TypeAt(index);
+            if (TileCatalog.IsProtectedStructure(type))
+            {
+                map[index] = 2;
+            }
+            else if (TileCatalog.IsPlayerBuilt(type))
+            {
+                map[index] = 1;
+            }
+        }
+
+        return map;
+    }
+
+    /// <summary>Records a fence tile the pickaxe has to take out, whatever the reason.</summary>
+    private static void RegisterDig(
+        TileGrid tiles,
+        int index,
+        int x,
+        int y,
+        int pickPower,
+        DigReason reason,
+        FenceTally totals)
+    {
+        ushort type = tiles.TypeAt(index);
+        int hits = TileCatalog.DigHits(type, pickPower);
+        if (hits <= 0)
+        {
+            totals.BlockedTiles++;
+            totals.RequiredPickPower = Math.Max(
+                totals.RequiredPickPower,
+                Math.Min(TileCatalog.MinPickPower(type), TileCatalog.StrongestPickPower));
+            totals.Digs.Add(new DigOrder(x, y, type, 0, DigReason.Blocked));
+            return;
+        }
+
+        totals.DigTiles++;
+        totals.DigHits += hits;
+        totals.RequiredPickPower = Math.Max(totals.RequiredPickPower, TileCatalog.MinPickPower(type));
+        totals.Digs.Add(new DigOrder(x, y, type, hits, reason));
+    }
+
+    /// <summary>Running totals for the parts of the fence that dynamite does not handle.</summary>
+    private sealed class FenceTally
+    {
+        public int DigTiles { get; set; }
+
+        public int BlockedTiles { get; set; }
+
+        public long DigHits { get; set; }
+
+        public int RequiredPickPower { get; set; }
+
+        public int ChargesWithCollateral { get; set; }
+
+        public int ProtectedInBlast { get; set; }
+
+        public int PlayerBlocksInBlast { get; set; }
+
+        public List<DigOrder> Digs { get; } = [];
     }
 
     /// <summary>

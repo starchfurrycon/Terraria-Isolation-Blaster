@@ -22,6 +22,7 @@ internal static class Program
         RunSpreadTests();
         RunPlannerTests();
         ExecutorTests.Run(Check);
+        PlanProtectionTests.Run(Check);
         RunWorldIntegrationTests(args);
 
         Console.WriteLine();

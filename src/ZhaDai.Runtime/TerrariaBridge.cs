@@ -354,8 +354,70 @@ namespace ZhaDai.Runtime
             return -1;
         }
 
-        public void SelectSlot(int slot)
+        /// <summary>
+        /// Total count of an item across the inventory. The supply audit uses this instead of the slot
+        /// search so a run that needs more Dynamite than fits in one stack is still measured honestly.
+        /// </summary>
+        public int CountItems(int itemId)
         {
+            object[] inventory = PlayerField(reflection.PlayerInventory) as object[];
+            if (inventory == null || reflection.ItemType == null)
+            {
+                return 0;
+            }
+
+            int total = 0;
+            for (int i = 0; i < inventory.Length; i++)
+            {
+                object item = inventory[i];
+                if (item == null)
+                {
+                    continue;
+                }
+
+                if (Convert.ToInt32(reflection.ItemType.GetValue(item)) != itemId)
+                {
+                    continue;
+                }
+
+                total += reflection.ItemStack != null ? Convert.ToInt32(reflection.ItemStack.GetValue(item)) : 1;
+            }
+
+            return total;
+        }
+
+        /// <summary>Best pickaxe power in the inventory; 0 when there is no pickaxe at all.</summary>
+        public int BestPickPower
+        {
+            get
+            {
+                object[] inventory = PlayerField(reflection.PlayerInventory) as object[];
+                if (inventory == null || reflection.ItemPick == null)
+                {
+                    return 0;
+                }
+
+                int best = 0;
+                for (int i = 0; i < inventory.Length; i++)
+                {
+                    object item = inventory[i];
+                    if (item == null)
+                    {
+                        continue;
+                    }
+
+                    int pick = Convert.ToInt32(reflection.ItemPick.GetValue(item));
+                    if (pick > best)
+                    {
+                        best = pick;
+                    }
+                }
+
+                return best;
+            }
+        }
+
+        public void SelectSlot(int slot)        {
             if (player == null || reflection.PlayerSelectedItemState == null || reflection.SelectedIndex == null)
             {
                 return;

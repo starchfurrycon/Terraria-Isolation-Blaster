@@ -111,6 +111,9 @@ namespace ZhaDai.Runtime
 
         public FieldInfo ItemStack { get; private set; }
 
+        /// <summary>Item.pick: the pickaxe power of an item, 0 for everything that is not a pickaxe.</summary>
+        public FieldInfo ItemPick { get; private set; }
+
         public FieldInfo NpcActive { get; private set; }
 
         public FieldInfo NpcFriendly { get; private set; }
@@ -217,6 +220,7 @@ namespace ZhaDai.Runtime
             reflection.SelectedIndex = reflection.OptionalField(reflection.SelectedItemState, "selected", "拿不到选中的格索引。");
             reflection.ItemType = reflection.RequireField(reflection.Item, "type");
             reflection.ItemStack = reflection.OptionalField(reflection.Item, "stack", "拿不到堆叠数量就无法判断雷管还剩几发。");
+            reflection.ItemPick = reflection.OptionalField(reflection.Item, "pick", "拿不到镐力就无法在开工前盘点镐子够不够。");
 
             reflection.NpcActive = reflection.OptionalField(reflection.Npc, "active", "拿不到 NPC 激活状态就不做敌怪规避。");
             reflection.NpcFriendly = reflection.OptionalField(reflection.Npc, "friendly", "拿不到友方标记就把 NPC 一律当威胁。");

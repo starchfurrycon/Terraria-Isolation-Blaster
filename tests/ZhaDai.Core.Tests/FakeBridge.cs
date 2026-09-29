@@ -113,6 +113,12 @@ internal sealed class FakeBridge : IGameBridge
 
     public int FindDynamiteSlot() => DynamiteCount > 0 ? 3 : -1;
 
+    /// <summary>Fake inventory: only Dynamite is counted, everything else is absent.</summary>
+    public int CountItems(int itemId) => itemId == GameIds.Dynamite ? DynamiteCount : 0;
+
+    /// <summary>Fake pickaxe power; the tests set it to whatever the run should be audited against.</summary>
+    public int BestPickPower { get; set; } = 100;
+
     public void SelectSlot(int slot)
     {
     }

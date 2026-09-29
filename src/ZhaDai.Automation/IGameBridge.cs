@@ -59,6 +59,16 @@ namespace ZhaDai.Automation
         /// <summary>Tile id of the Dynamite item stack, or -1 when the player has none.</summary>
         int FindDynamiteSlot();
 
+        /// <summary>How many of an item the player is carrying, across the whole inventory.</summary>
+        int CountItems(int itemId);
+
+        /// <summary>
+        /// Best pickaxe power in the inventory, 0 with no pickaxe. The plan's dig list is only
+        /// executable if this reaches the pick power the plan was computed with, so the run checks it
+        /// before the first swing instead of standing in front of unbreakable rock later.
+        /// </summary>
+        int BestPickPower { get; }
+
         /// <summary>Selects the hotbar slot before a throw.</summary>
         void SelectSlot(int slot);
 
@@ -86,5 +96,8 @@ namespace ZhaDai.Automation
         HostileTooClose,
         AboutToDrown,
         ManualStop,
+
+        /// <summary>The player is not carrying what the plan needs; nothing was fired.</summary>
+        NotEnoughSupplies,
     }
 }

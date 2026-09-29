@@ -12,6 +12,10 @@ namespace ZhaDai.Automation
         Retreating,
         WaitingDetonation,
         Digging,
+
+        /// <summary>Working through the plan's pickaxe list before any charge is armed.</summary>
+        DigFence,
+
         AwaitRespawn,
         Halted,
         Finished,
@@ -49,6 +53,31 @@ namespace ZhaDai.Automation
 
         /// <summary>A drop steeper than this is treated as a fall risk and the executor refuses to walk off.</summary>
         public int MaxSafeDropTiles { get; set; } = 20;
+
+        /// <summary>
+        /// Refuse to take over at all unless the player is carrying enough Dynamite for the whole job.
+        /// The default adds a small margin: running out halfway leaves a fence with holes in it, which
+        /// is worse than not starting.
+        /// </summary>
+        public int RequiredDynamiteMargin { get; set; } = 5;
+
+        /// <summary>
+        /// Minimum pickaxe power for the plan's dig list. Zero means "whatever the plan was computed
+        /// with"; the audit compares the best pickaxe in the inventory against it.
+        /// </summary>
+        public int RequiredPickPower { get; set; }
+
+        /// <summary>How close the player has to be (Chebyshev tiles) before swinging at a dig target.</summary>
+        public int DigReachTiles { get; set; } = 5;
+
+        /// <summary>Give up on one dig tile after this many ticks so the run always makes progress.</summary>
+        public int MaxTicksPerDig { get; set; } = 900;
+
+        /// <summary>Inert blocks the plan wants placed. Zero disables the block part of the audit.</summary>
+        public int RequiredBlocks { get; set; }
+
+        /// <summary>Item id of the block used for the plan's plugs, -1 when there are none.</summary>
+        public int RequiredBlockItem { get; set; } = -1;
     }
 
     /// <summary>Read-only progress, so a UI or the runtime overlay can show what is happening.</summary>
@@ -69,6 +98,15 @@ namespace ZhaDai.Automation
         public int BlastHits { get; internal set; }
 
         public int GravestonesDug { get; internal set; }
+
+        /// <summary>Fence tiles the pickaxe finished.</summary>
+        public int DigsDone { get; internal set; }
+
+        /// <summary>Fence tiles the pickaxe could not get to; a skipped dig can leave a leak behind.</summary>
+        public int DigsSkipped { get; internal set; }
+
+        /// <summary>Set when the supply audit ran, so the report can quote what it found.</summary>
+        public string AuditMessage { get; internal set; } = string.Empty;
 
         public long Ticks { get; internal set; }
 
@@ -104,6 +142,9 @@ namespace ZhaDai.Automation
         private double deathX;
         private double deathY;
         private bool stopped;
+        private bool audited;
+        private int digIndex;
+        private long digTick;
 
         public BlastExecutor(ExecutionPlan plan, ExecutorOptions options)
         {
@@ -164,6 +205,24 @@ namespace ZhaDai.Automation
                 return;
             }
 
+            // One audit, before anything is thrown: taking over with half a stack of Dynamite and a
+            // copper pickaxe produces a fence full of holes and a lot of walking.
+            if (!audited)
+            {
+                audited = true;
+                if (!AuditSupplies(game, out string audit))
+                {
+                    status.AuditMessage = audit;
+                    status.LastSkip = SkipReason.NotEnoughSupplies;
+                    SetState(ExecutorState.Halted, SkipReason.NotEnoughSupplies, audit);
+                    game.Log("拒绝接管：" + audit);
+                    return;
+                }
+
+                status.AuditMessage = audit;
+                game.Log("接管前盘点通过：" + audit);
+            }
+
             // Drowning is the one hazard that kills slowly enough to walk away from.
             if (game.PlayerCanDrown && game.PlayerLiquidKind != 0 && game.PlayerBreath < options.BreathFloor)
             {
@@ -192,6 +251,9 @@ namespace ZhaDai.Automation
                 case ExecutorState.Digging:
                     TickDigging(game);
                     break;
+                case ExecutorState.DigFence:
+                    TickDigFence(game);
+                    break;
                 default:
                     break;
             }
@@ -212,6 +274,16 @@ namespace ZhaDai.Automation
 
         private void AdvanceToNextCharge(IGameBridge game)
         {
+            // The pickaxe list runs before the first charge: those tiles are the ones dynamite cannot
+            // remove or must not be aimed at, and they sit on the same band the charges will open.
+            if (digIndex < plan.Digs.Count)
+            {
+                stateTick = game.Tick;
+                digTick = game.Tick;
+                SetState(ExecutorState.DigFence, SkipReason.None, "先处理计划里要挖的 " + plan.Digs.Count + " 格封带。");
+                return;
+            }
+
             if (status.ChargeIndex >= plan.Charges.Count)
             {
                 SetState(ExecutorState.Finished, SkipReason.None, "施工文件里的雷管都处理完了。");
@@ -220,6 +292,145 @@ namespace ZhaDai.Automation
 
             stateTick = game.Tick;
             SetState(ExecutorState.GoToStand, SkipReason.None, "前往站位 " + Current);
+        }
+
+        /// <summary>
+        /// Checks the player is actually equipped for the job the plan describes. Refusing here is the
+        /// whole point: a run that starts short of Dynamite or with a pickaxe below the planned power
+        /// cannot finish the fence, and a half finished fence is worse than none.
+        /// </summary>
+        private bool AuditSupplies(IGameBridge game, out string message)
+        {
+            int needDynamite = plan.Charges.Count + Math.Max(0, options.RequiredDynamiteMargin);
+            int haveDynamite = game.CountItems(GameIds.Dynamite);
+            int needPick = options.RequiredPickPower > 0 ? options.RequiredPickPower : plan.PickPower;
+            int havePick = game.BestPickPower;
+            int digs = 0;
+            for (int i = 0; i < plan.Digs.Count; i++)
+            {
+                if (plan.Digs[i].Hits > 0)
+                {
+                    digs++;
+                }
+            }
+
+            List<string> missing = new List<string>();
+            if (haveDynamite < needDynamite)
+            {
+                missing.Add(string.Format(
+                    CultureInfo.InvariantCulture,
+                    "雷管 {0}/{1} 发",
+                    haveDynamite,
+                    needDynamite));
+            }
+
+            if (digs > 0 && havePick < needPick)
+            {
+                missing.Add(string.Format(
+                    CultureInfo.InvariantCulture,
+                    "镐力 {0}%/{1}%（计划里有 {2} 格要靠镐子）",
+                    havePick,
+                    needPick,
+                    digs));
+            }
+
+            if (options.RequiredBlocks > 0)
+            {
+                int haveBlocks = options.RequiredBlockItem > 0 ? game.CountItems(options.RequiredBlockItem) : 0;
+                if (haveBlocks < options.RequiredBlocks)
+                {
+                    missing.Add(string.Format(
+                        CultureInfo.InvariantCulture,
+                        "封堵物块 {0}/{1} 格",
+                        haveBlocks,
+                        options.RequiredBlocks));
+                }
+            }
+
+            if (missing.Count > 0)
+            {
+                message = "材料不够，先补齐再接管：" + string.Join("、", missing) + "。";
+                return false;
+            }
+
+            message = string.Format(
+                CultureInfo.InvariantCulture,
+                "雷管 {0} 发（需要 {1}）、镐力 {2}%（需要 {3}）、待挖 {4} 格",
+                haveDynamite,
+                needDynamite,
+                havePick,
+                needPick,
+                digs);
+            return true;
+        }
+
+        /// <summary>
+        /// Works through the plan's dig list. Every swing is checked against the live world: the tile
+        /// may already be gone because a blast reached it first, in which case there is nothing to do.
+        /// </summary>
+        private void TickDigFence(IGameBridge game)
+        {
+            if (digIndex >= plan.Digs.Count)
+            {
+                status.State = ExecutorState.Idle;
+                AdvanceToNextCharge(game);
+                return;
+            }
+
+            DigOrder dig = plan.Digs[digIndex];
+            if (dig.Hits <= 0)
+            {
+                // Blocked tiles are reported by the planner, never executed.
+                digIndex++;
+                digTick = game.Tick;
+                return;
+            }
+
+            int dx = (int)Math.Floor(game.PlayerX) - dig.X;
+            int dy = (int)Math.Floor(game.PlayerY) - dig.Y;
+            int distance = Math.Max(Math.Abs(dx), Math.Abs(dy));
+
+            if (!game.IsSolid(dig.X, dig.Y))
+            {
+                status.DigsDone++;
+                digIndex++;
+                digTick = game.Tick;
+                return;
+            }
+
+            if (game.Tick - digTick > options.MaxTicksPerDig)
+            {
+                status.DigsSkipped++;
+                game.Log(string.Format(
+                    CultureInfo.InvariantCulture,
+                    "挖不到 ({0},{1})：{2} tick 内没能到位，先跳过（这一格可能留下缺口）。",
+                    dig.X,
+                    dig.Y,
+                    options.MaxTicksPerDig));
+                digIndex++;
+                digTick = game.Tick;
+                return;
+            }
+
+            // A hostile on top of the dig site means the swing can wait; a pickaxe swing is not worth
+            // a death, and the executor already holds still for hostiles while arming.
+            if (game.NearestHostileDistance < options.HostileSafeDistance / 2d)
+            {
+                game.SetMovement(0, 0, false);
+                SetState(ExecutorState.DigFence, SkipReason.HostileTooClose, "有敌怪贴脸，先不打镐子。");
+                digTick = game.Tick - (options.MaxTicksPerDig / 2);
+                return;
+            }
+
+            if (distance > options.DigReachTiles)
+            {
+                WalkTowards(game, dig.X, dig.Y);
+                SetState(ExecutorState.DigFence, SkipReason.None, "走向待挖格 " + dig);
+                return;
+            }
+
+            game.DigTile(dig.X, dig.Y);
+            SetState(ExecutorState.DigFence, SkipReason.None, "挖 " + dig);
         }
 
         private void TickGoToStand(IGameBridge game)

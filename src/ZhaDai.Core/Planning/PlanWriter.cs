@@ -75,6 +75,13 @@ public static class PlanWriter
         writer.WriteNumber("mixedSections", summary.MixedSections);
         writer.WriteNumber("fenceTiles", summary.FenceTiles);
         writer.WriteNumber("charges", summary.Charges);
+        writer.WriteNumber("digTiles", summary.DigTiles);
+        writer.WriteNumber("blockedTiles", summary.BlockedTiles);
+        writer.WriteNumber("requiredPickPower", summary.RequiredPickPower);
+        writer.WriteNumber("chargesWithCollateral", summary.ChargesWithCollateral);
+        writer.WriteNumber("protectedTilesInBlast", summary.ProtectedTilesInBlast);
+        writer.WriteNumber("playerBlocksInBlast", summary.PlayerBlocksInBlast);
+        writer.WriteNumber("estimatedDigSeconds", summary.EstimatedDigSeconds);
         writer.WriteNumber("dynamiteStacks", summary.DynamiteStacks);
         writer.WriteNumber("seedsDestroyedByBlast", summary.SeedsDestroyedByBlast);
         writer.WriteNumber("enclosedSeedTiles", summary.EnclosedSeedTiles);
@@ -172,8 +179,12 @@ public static class PlanWriter
         text.Append("fuse=").Append(opts.DynamiteFuseTicks).Append('\n');
         text.Append("vine=").Append(opts.VineReach).Append('\n');
         text.Append("retreat=").Append(opts.BlastRadius + opts.RetreatMarginTiles).Append('\n');
+        text.Append("protection=").Append(opts.Protection.ToString().ToLowerInvariant()).Append('\n');
+        text.Append("pick=").Append(opts.PickPower).Append('\n');
         text.Append("sections=").Append(plan.Sections.Count).Append('\n');
         text.Append("charges=").Append(plan.Charges.Count).Append('\n');
+        text.Append("digs=").Append(plan.DigOrders.Count(dig => dig.Hits > 0)).Append('\n');
+        text.Append("blocked=").Append(plan.DigOrders.Count(dig => dig.Hits <= 0)).Append('\n');
 
         foreach (FenceSection section in plan.Sections)
         {
@@ -195,6 +206,8 @@ public static class PlanWriter
             if (charge.TrapInBlast) hazards |= 4;
             if (charge.GravestoneInBlast) hazards |= 8;
             if (charge.ExplosivesInBlast) hazards |= 16;
+            if (charge.ProtectedTilesInBlast > 0) hazards |= 32;
+            if (charge.PlayerBlocksInBlast > 0) hazards |= 64;
 
             text.Append("#CHARGE ").Append(charge.Order)
                 .Append(' ').Append(charge.X)
@@ -203,6 +216,22 @@ public static class PlanWriter
                 .Append(" stand=").Append(charge.StandX).Append(',').Append(charge.StandY)
                 .Append(" retreat=").Append(charge.RetreatAvailable ? 1 : 0)
                 .Append(" haz=").Append(hazards)
+                .Append('\n');
+        }
+
+        // Dig orders come last and carry their own hit count so the executor can pace the swings and
+        // knows which tiles a 100% pickaxe will never break.
+        foreach (DigOrder dig in plan.DigOrders)
+        {
+            if (dig.Hits <= 0)
+            {
+                continue;
+            }
+
+            text.Append("#DIG ").Append(dig.X).Append(' ').Append(dig.Y)
+                .Append(" type=").Append(dig.Type)
+                .Append(" hits=").Append(dig.Hits)
+                .Append(" why=").Append(dig.Reason.ToString().ToLowerInvariant())
                 .Append('\n');
         }
 
@@ -223,6 +252,13 @@ public static class PlanWriter
         text.AppendLine(string.Format(culture, "感染源：邪恶 {0} 格，神圣 {1} 格；可感染物块 {2} 格", s.EvilSeeds, s.HallowSeeds, s.InfectionNodes));
         text.AppendLine(string.Format(culture, "隔离段：{0} 段（其中混合段 {1}）", s.Sections, s.MixedSections));
         text.AppendLine(string.Format(culture, "封带物块：{0} 格；雷管：{1} 发（约 {2} 组）", s.FenceTiles, s.Charges, s.DynamiteStacks));
+        text.AppendLine(string.Format(
+            culture,
+            "镐子分担：{0} 格（约 {1} 分钟，需要镐力 {2}%）；两样都处理不掉：{3} 格",
+            s.DigTiles,
+            Math.Round(s.EstimatedDigSeconds / 60d, 1),
+            s.RequiredPickPower,
+            s.BlockedTiles));
         text.AppendLine(string.Format(culture, "封住的感染物块：{0} 格（占全部可感染物块 {1:0.###}%）", s.EnclosedSeedTiles, s.InfectionNodes == 0 ? 0d : 100d * s.EnclosedSeedTiles / s.InfectionNodes));
         text.AppendLine(string.Format(culture, "爆破总摧毁：{0} 格（其中炸不掉而留存 {1} 格）", s.BlastDestroyedTiles, s.BlastImmuneTilesInBlast));
         text.AppendLine(string.Format(culture, "封带泛洪复核：{0}", s.AllSectionsSealed ? "全部封住" : "有段未封住"));

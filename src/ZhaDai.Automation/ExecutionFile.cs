@@ -45,6 +45,27 @@ namespace ZhaDai.Automation
         }
     }
 
+    /// <summary>One tile the pickaxe has to remove, as read from the plan's execution file.</summary>
+    public sealed class DigOrder
+    {
+        public int X { get; set; }
+
+        public int Y { get; set; }
+
+        public int Type { get; set; }
+
+        /// <summary>Swings a pickaxe of the planned power needs. Zero means blocked, never executed.</summary>
+        public int Hits { get; set; }
+
+        /// <summary>Why it is a dig rather than a blast: blastimmune, collateral, uncovered.</summary>
+        public string Reason { get; set; } = string.Empty;
+
+        public override string ToString()
+        {
+            return string.Format(CultureInfo.InvariantCulture, "挖 ({0},{1}) 物块 {2} x{3} [{4}]", X, Y, Type, Hits, Reason);
+        }
+    }
+
     /// <summary>The work order the planner wrote, parsed back into something the runtime can run.</summary>
     public sealed class ExecutionPlan
     {
@@ -62,9 +83,15 @@ namespace ZhaDai.Automation
 
         public int RetreatTiles { get; set; } = 10;
 
+        /// <summary>Pick power the planner assumed for the dig list.</summary>
+        public int PickPower { get; set; }
+
         public int SectionCount { get; set; }
 
         public List<ChargeOrder> Charges { get; } = new List<ChargeOrder>();
+
+        /// <summary>Tiles the plan wants dug instead of blasted; empty when dynamite covers everything.</summary>
+        public List<DigOrder> Digs { get; } = new List<DigOrder>();
 
         /// <summary>
         /// Parses the line oriented file written by <c>PlanWriter.WriteExecutionFile</c>. Only the
@@ -87,6 +114,12 @@ namespace ZhaDai.Automation
             foreach (string raw in lines)
             {
                 string line = raw.TrimEnd('\r');
+                if (line.StartsWith("pick=", StringComparison.Ordinal))
+                {
+                    plan.PickPower = ParseInt(line.Substring("pick=".Length));
+                    continue;
+                }
+
                 if (line.Length == 0 || line[0] != '#')
                 {
                     continue;
@@ -95,6 +128,12 @@ namespace ZhaDai.Automation
                 if (line.StartsWith("#SECTION", StringComparison.Ordinal))
                 {
                     plan.SectionCount++;
+                    continue;
+                }
+
+                if (line.StartsWith("#DIG ", StringComparison.Ordinal))
+                {
+                    plan.Digs.Add(ParseDig(line));
                     continue;
                 }
 
@@ -107,6 +146,47 @@ namespace ZhaDai.Automation
             }
 
             return plan;
+        }
+
+        private static DigOrder ParseDig(string line)
+        {
+            DigOrder dig = new DigOrder();
+            string[] parts = line.Substring("#DIG ".Length).Split(' ');
+            if (parts.Length < 2)
+            {
+                throw new InvalidDataException("施工文件里的 #DIG 行格式不对：" + line);
+            }
+
+            dig.X = ParseInt(parts[0]);
+            dig.Y = ParseInt(parts[1]);
+            for (int i = 2; i < parts.Length; i++)
+            {
+                string[] pair = parts[i].Split('=');
+                if (pair.Length != 2)
+                {
+                    continue;
+                }
+
+                switch (pair[0])
+                {
+                    case "type":
+                        dig.Type = ParseInt(pair[1]);
+                        break;
+                    case "hits":
+                        dig.Hits = ParseInt(pair[1]);
+                        break;
+                    case "why":
+                        dig.Reason = pair[1];
+                        break;
+                }
+            }
+
+            return dig;
+        }
+
+        private static int ParseInt(string text)
+        {
+            return int.Parse(text, CultureInfo.InvariantCulture);
         }
 
         public static ExecutionPlan Load(string path)
