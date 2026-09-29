@@ -91,6 +91,7 @@ internal static class Program
             Protection = options.Protection,
             ProtectionBuffer = options.ProtectionBuffer,
             PlugVines = options.PlugVines,
+            PurgeSeeds = options.PurgeSeeds,
             PlugItemId = options.PlugItemId,
             PickPower = options.PickPower,
         };
@@ -163,6 +164,7 @@ internal static class Program
             Protection = options.Protection,
             ProtectionBuffer = options.ProtectionBuffer,
             PlugVines = options.PlugVines,
+            PurgeSeeds = options.PurgeSeeds,
             PlugItemId = options.PlugItemId,
             PickPower = options.PickPower,
         };
@@ -344,6 +346,9 @@ internal static class Program
 
         /// <summary>Replace vine curtains with one inert block per anchor; see BlastPlanOptions.PlugVines.</summary>
         public bool PlugVines { get; private set; } = true;
+
+        /// <summary>Also clear the infected tiles inside the band; off by default.</summary>
+        public bool PurgeSeeds { get; private set; } = true;
 
         /// <summary>Item id used for the plugs, default wood (9).</summary>
         public int PlugItemId { get; private set; } = 9;

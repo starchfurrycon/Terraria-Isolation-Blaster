@@ -193,6 +193,14 @@ public static class BlastPlanner
                         continue;
                     }
 
+                    // Distance 0 is the infection itself. Cutting the clean side is what isolates it; the
+                    // infected tiles behind the cut are already lost, so by default they are left standing.
+                    if (model.IsSeed(index) && !opts.PurgeSeeds)
+                    {
+                        totals.InfectedTilesLeftStanding++;
+                        continue;
+                    }
+
                     if (distance > opts.Clearance || fence[index] != 0)
                     {
                         continue;
@@ -200,6 +208,10 @@ public static class BlastPlanner
 
                     fence[index] = 1;
                     sectionFenceTiles++;
+                    if (model.IsSeed(index))
+                    {
+                        totals.FenceSeedTiles++;
+                    }
                 }
             }
 
@@ -364,6 +376,15 @@ public static class BlastPlanner
             BlastImmuneTilesInBlast: blastImmuneInBlast,
             AllSectionsSealed: allSealed,
             VineAnchorTiles: vineAnchors,
+            FenceSeedTiles: totals.FenceSeedTiles,
+            InfectedTilesLeftStanding: totals.InfectedTilesLeftStanding,
+            ChargesCoveringOneTile: totals.PlacementScoreBuckets[0],
+            ChargesCoveringTwoToFive: totals.PlacementScoreBuckets[1],
+            ChargesCoveringSixToTwenty: totals.PlacementScoreBuckets[2],
+            ChargesCoveringTwentyOneToSixty: totals.PlacementScoreBuckets[3],
+            ChargesCoveringSixtyOneToOneTwenty: totals.PlacementScoreBuckets[4],
+            ChargesCoveringOverOneTwenty: totals.PlacementScoreBuckets[5] + totals.PlacementScoreBuckets[6],
+            BlastTileHits: totals.BlastTileHits,
             PlugTiles: plugOrders.Count,
             RequiredPlugBlocks: plugOrders.Count == 0 ? 0 : plugOrders.Count + 10,
             PlugItemId: opts.PlugItemId,
@@ -651,7 +672,7 @@ public static class BlastPlanner
     /// nearest the seed tile, which keeps placement deterministic and keeps the charge next to the
     /// band it was found on.
     /// </summary>
-    private static (int X, int Y, int Structures, int PlayerBlocks, bool Found) FindBestPlacement(
+    private static (int X, int Y, int Structures, int PlayerBlocks, bool Found, int CoveredTiles) FindBestPlacement(
         int x,
         int y,
         byte[] fence,
@@ -669,6 +690,7 @@ public static class BlastPlanner
         int bestDistance = int.MaxValue;
         int bestStructures = int.MaxValue;
         int bestPlayerBlocks = int.MaxValue;
+        int bestScoreSeen = 0;
         bool found = false;
 
         for (int cy = y - radius; cy <= y + radius; cy++)
@@ -719,6 +741,11 @@ public static class BlastPlanner
                     continue;
                 }
 
+                if (score > bestScoreSeen)
+                {
+                    bestScoreSeen = score;
+                }
+
                 int dx = cx - x;
                 int dy = cy - y;
                 int distance = (dx * dx) + (dy * dy);
@@ -750,7 +777,7 @@ public static class BlastPlanner
             }
         }
 
-        return (bestX, bestY, bestStructures == int.MaxValue ? 0 : bestStructures, bestPlayerBlocks == int.MaxValue ? 0 : bestPlayerBlocks, found);
+        return (bestX, bestY, bestStructures == int.MaxValue ? 0 : bestStructures, bestPlayerBlocks == int.MaxValue ? 0 : bestPlayerBlocks, found, bestScoreSeen);
     }
 
     private static int OffsetX(int packed) => (short)(packed & 0xFFFF);
@@ -793,7 +820,7 @@ public static class BlastPlanner
                 // charge spends half its radius on the infection side. Searching the surrounding
                 // window for the position that clears the most still-uncovered band tiles is what
                 // turns a band into a few large bites instead of one charge per few tiles.
-                (int bestX, int bestY, int structures, int playerBlocks, bool found) = FindBestPlacement(
+                (int bestX, int bestY, int structures, int playerBlocks, bool found, int coveredTiles) = FindBestPlacement(
                     x,
                     y,
                     fence,
@@ -839,6 +866,8 @@ public static class BlastPlanner
                 }
 
                 placed.Add((bestX, bestY));
+                totals.BlastTileHits += blastOffsets.Length;
+                totals.RecordPlacementScore(coveredTiles);
                 placementDamage[(bestX, bestY)] = (structures, playerBlocks);
                 if (structures > 0 || playerBlocks > 0)
                 {
@@ -885,11 +914,11 @@ public static class BlastPlanner
             }
         }
 
-        foreach (int index in coveredTouched)
-        {
-            covered[index] = 0;
-        }
-
+        // Coverage is deliberately NOT reset here. The band mask is shared by every section, and a
+        // section's work region reaches far past its own front, so a section that cleared the mask would
+        // happily pay for the same tile again the next time a neighbouring front scanned past it -- which
+        // is how a 25k tile band used to turn into nine thousand charges. Keeping the marks makes each
+        // band tile cost exactly one charge in the whole plan.
         coveredTouched.Clear();
 
         if (placed.Count == 0)
@@ -1176,6 +1205,24 @@ public static class BlastPlanner
 
         public int ChargesWithCollateral { get; set; }
 
+        /// <summary>Fence tiles that are already infected: they are inside the band but need no clearing.</summary>
+        public int FenceSeedTiles { get; set; }
+
+        /// <summary>Infected tiles the band would have covered but the default leaves alone.</summary>
+        public int InfectedTilesLeftStanding { get; set; }
+
+        /// <summary>Raw tile hits of every placed charge (charges x disc size), for the overlap figure.</summary>
+        public int BlastTileHits { get; set; }
+
+        /// <summary>How many new band tiles each placed charge covered, bucketed for the report.</summary>
+        public int[] PlacementScoreBuckets { get; } = new int[7];
+
+        public void RecordPlacementScore(int score)
+        {
+            int bucket = score <= 1 ? 0 : score <= 2 ? 1 : score <= 5 ? 2 : score <= 20 ? 3 : score <= 60 ? 4 : score <= 120 ? 5 : 6;
+            PlacementScoreBuckets[bucket]++;
+        }
+
         public int ProtectedInBlast { get; set; }
 
         public int PlayerBlocksInBlast { get; set; }
@@ -1183,6 +1230,18 @@ public static class BlastPlanner
         public int BuiltWallsInBlast { get; set; }
 
         public int BuiltWallsWorld { get; set; }
+
+        public int ChargesCoveringOneTile { get; set; }
+
+        public int ChargesCoveringTwoToFive { get; set; }
+
+        public int ChargesCoveringSixToTwenty { get; set; }
+
+        public int ChargesCoveringTwentyOneToSixty { get; set; }
+
+        public int ChargesCoveringSixtyOneToOneTwenty { get; set; }
+
+        public int ChargesCoveringOverOneTwenty { get; set; }
 
         public List<DigOrder> Digs { get; } = [];
     }

@@ -74,6 +74,14 @@ public static class PlanWriter
         writer.WriteNumber("sections", summary.Sections);
         writer.WriteNumber("mixedSections", summary.MixedSections);
         writer.WriteNumber("fenceTiles", summary.FenceTiles);
+        writer.WriteNumber("fenceSeedTiles", summary.FenceSeedTiles);
+        writer.WriteNumber("blastTileHits", summary.BlastTileHits);
+        writer.WriteNumber("chargesCoveringOneTile", summary.ChargesCoveringOneTile);
+        writer.WriteNumber("chargesCoveringTwoToFive", summary.ChargesCoveringTwoToFive);
+        writer.WriteNumber("chargesCoveringSixToTwenty", summary.ChargesCoveringSixToTwenty);
+        writer.WriteNumber("chargesCoveringTwentyOneToSixty", summary.ChargesCoveringTwentyOneToSixty);
+        writer.WriteNumber("chargesCoveringSixtyOneToOneTwenty", summary.ChargesCoveringSixtyOneToOneTwenty);
+        writer.WriteNumber("chargesCoveringOverOneTwenty", summary.ChargesCoveringOverOneTwenty);
         writer.WriteNumber("charges", summary.Charges);
         writer.WriteNumber("digTiles", summary.DigTiles);
         writer.WriteNumber("blockedTiles", summary.BlockedTiles);
@@ -269,6 +277,13 @@ public static class PlanWriter
         text.AppendLine(string.Format(culture, "难度：{0}", plan.World.HardMode ? "困难模式" : "肉前"));
         text.AppendLine(string.Format(culture, "感染源：邪恶 {0} 格，神圣 {1} 格；可感染物块 {2} 格", s.EvilSeeds, s.HallowSeeds, s.InfectionNodes));
         text.AppendLine(string.Format(culture, "隔离段：{0} 段（其中混合段 {1}）", s.Sections, s.MixedSections));
+        text.AppendLine(string.Format(
+            culture,
+            "封带构成：感染源 {0} 格 + 干净物块 {1} 格；雷管原始命中 {2} 格（每格封带被炸 {3:0.0} 次）",
+            s.FenceSeedTiles,
+            s.FenceTiles - s.FenceSeedTiles,
+            s.BlastTileHits,
+            s.FenceTiles == 0 ? 0 : (double)s.BlastTileHits / s.FenceTiles));
         if (s.PlugTiles > 0)
         {
             text.AppendLine(string.Format(

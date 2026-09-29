@@ -68,6 +68,13 @@ public sealed record BlastPlanOptions
     /// </summary>
     public bool PlugVines { get; init; } = true;
 
+    /// <summary>
+    /// Also clear the infected tiles that sit inside the band. Isolation only needs the clean side cut, so
+    /// this is off by default: the infected tiles are already lost, and blowing them up costs a quarter
+    /// more dynamite for nothing more than a tidier crater.
+    /// </summary>
+    public bool PurgeSeeds { get; init; } = true;
+
     /// <summary>Item id used as the plug. Wood is the cheapest thing everybody has by the hundred.</summary>
     public int PlugItemId { get; init; } = 9;
 
@@ -247,6 +254,15 @@ public sealed record BlastPlanSummary(
     int BuiltWallTilesProtected = 0,
     int BuiltWallTilesWorld = 0,
     int PlugTiles = 0,
+    int FenceSeedTiles = 0,
+    int InfectedTilesLeftStanding = 0,
+    int ChargesCoveringOneTile = 0,
+    int ChargesCoveringTwoToFive = 0,
+    int ChargesCoveringSixToTwenty = 0,
+    int ChargesCoveringTwentyOneToSixty = 0,
+    int ChargesCoveringSixtyOneToOneTwenty = 0,
+    int ChargesCoveringOverOneTwenty = 0,
+    int BlastTileHits = 0,
     int RequiredPlugBlocks = 0,
     int PlugItemId = 0,
     int VineCurtainTilesSaved = 0,
