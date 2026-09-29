@@ -184,7 +184,7 @@ public sealed class InfectionModel
     /// Whether a tile that carries a plant can bridge to another node. The caller supplies the
     /// candidate target; source tiles that cannot host plants simply never bridge.
     /// </summary>
-    public bool CanPlantBridge(int sourceIndex, int targetIndex)
+    public bool CanPlantBridge(int sourceIndex, int targetIndex, IReadOnlySet<int>? plugged = null)
     {
         if (node[sourceIndex] == 0 || node[targetIndex] == 0)
         {
@@ -206,6 +206,14 @@ public sealed class InfectionModel
 
         if (dx == 0 && dy > 0 && dy <= VineDownwardReach)
         {
+            // A block placed directly under the plant leaves the vine nowhere to start, so a plugged
+            // column is not a route at all. That is the whole reason plugs are worth carrying: one inert
+            // block replaces a curtain as deep as the vine can reach.
+            if (plugged != null && plugged.Contains(sourceIndex + Tiles.Width))
+            {
+                return false;
+            }
+
             return true; // downward vine
         }
 

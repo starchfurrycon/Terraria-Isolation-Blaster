@@ -16,6 +16,9 @@ namespace ZhaDai.Automation
         /// <summary>Working through the plan's pickaxe list before any charge is armed.</summary>
         DigFence,
 
+        /// <summary>Filling the vine anchors with an inert block, which has to happen after the last blast.</summary>
+        PlugFence,
+
         AwaitRespawn,
         Halted,
         Finished,
@@ -93,6 +96,12 @@ namespace ZhaDai.Automation
 
         /// <summary>Cost of mining a tile relative to walking one, in tenths: 120 means twelve tiles of walking.</summary>
         public int PathDigCost { get; set; } = 120;
+
+        /// <summary>How close the player has to be to place a plug; matches the dig reach.</summary>
+        public int PlugReachTiles { get; set; } = 5;
+
+        /// <summary>Give up on one plug after this many ticks so a single bad spot cannot stall the run.</summary>
+        public int MaxTicksPerPlug { get; set; } = 900;
     }
 
     /// <summary>Read-only progress, so a UI or the runtime overlay can show what is happening.</summary>
@@ -131,6 +140,16 @@ namespace ZhaDai.Automation
 
         /// <summary>Times the route had to be recomputed because the player could not follow it.</summary>
         public int RouteRestarts { get; internal set; }
+
+        /// <summary>Plugs placed, skipped, and found already solid.</summary>
+        public int PlugsDone { get; internal set; }
+
+        public int PlugsSkipped { get; internal set; }
+
+        public int PlugsAlreadySolid { get; internal set; }
+
+        /// <summary>Plugs skipped since the last state change, for the log line.</summary>
+        public int LastPlugsSkipped { get; internal set; }
 
         /// <summary>Tiles the route itself had to mine. The blast crater is counted separately.</summary>
         public int RouteDigs { get; internal set; }
@@ -175,6 +194,8 @@ namespace ZhaDai.Automation
         private bool stopped;
         private bool audited;
         private int lastArmedCharge = -1;
+        private int plugIndex;
+        private long plugTick;
         private int digIndex;
         private long digTick;
 
@@ -302,6 +323,9 @@ namespace ZhaDai.Automation
                 case ExecutorState.DigFence:
                     TickDigFence(game);
                     break;
+                case ExecutorState.PlugFence:
+                    TickPlugFence(game);
+                    break;
                 default:
                     break;
             }
@@ -334,6 +358,15 @@ namespace ZhaDai.Automation
 
             if (status.ChargeIndex >= plan.Charges.Count)
             {
+                // Plugs last, deliberately: a block placed inside a blast radius is a block the next
+                // charge removes again, so the anchors are filled only once every charge has gone off.
+                if (plugIndex < plan.Plugs.Count)
+                {
+                    plugTick = game.Tick;
+                    SetState(ExecutorState.PlugFence, SkipReason.None, "雷管都放完了，开始封堵 " + plan.Plugs.Count + " 个藤蔓根。");
+                    return;
+                }
+
                 SetState(ExecutorState.Finished, SkipReason.None, "施工文件里的雷管都处理完了。");
                 return;
             }
@@ -382,7 +415,14 @@ namespace ZhaDai.Automation
                     digs));
             }
 
-            if (options.RequiredBlocks > 0)
+            if (options.RequiredBlocks == 0 && plan.Plugs.Count > 0)
+        {
+            // The plan carries its own plug demand, so the audit works without the caller repeating it.
+            options.RequiredBlocks = plan.Plugs.Count + 10;
+            options.RequiredBlockItem = plan.PlugItemId > 0 ? plan.PlugItemId : options.RequiredBlockItem;
+        }
+
+        if (options.RequiredBlocks > 0)
             {
                 int haveBlocks = options.RequiredBlockItem > 0 ? game.CountItems(options.RequiredBlockItem) : 0;
                 if (haveBlocks < options.RequiredBlocks)
@@ -924,6 +964,73 @@ namespace ZhaDai.Automation
         /// cases the search cannot solve inside its window, so the executor never freezes just because
         /// the pathfinder gave up.
         /// </summary>
+        /// <summary>
+        /// Fills the vine anchors' first air tile with an inert block. The planner has already decided that
+        /// this replaces a curtain of blasted tiles, so the model counts these plugs as barriers; if one
+        /// cannot be placed the plan may leak, which is why every failure is counted and reported rather
+        /// than passed over.
+        /// </summary>
+        private void TickPlugFence(IGameBridge game)
+        {
+            if (plugIndex >= plan.Plugs.Count)
+            {
+                SetState(ExecutorState.Finished, SkipReason.None, "封堵完成，施工文件全部处理完。");
+                return;
+            }
+
+            if (game.Tick - plugTick > options.MaxTicksPerPlug)
+            {
+                status.PlugsSkipped++;
+                string timeout = string.Format(
+                    CultureInfo.InvariantCulture,
+                    "封堵 ({0},{1}) 超时，跳过；这一格藤蔓根可能还在。",
+                    plan.Plugs[plugIndex].X,
+                    plan.Plugs[plugIndex].Y);
+                game.Log(timeout);
+                status.LastPlugsSkipped++;
+                plugIndex++;
+                plugTick = game.Tick;
+                return;
+            }
+
+            PlugOrder plug = plan.Plugs[plugIndex];
+            double distance = Chebyshev(game.PlayerX, game.PlayerY, plug.X, plug.Y);
+            if (distance > options.PlugReachTiles)
+            {
+                WalkTowards(game, plug.X, plug.Y);
+                return;
+            }
+
+            if (game.IsSolid(plug.X, plug.Y))
+            {
+                // Rock got there first, and rock already stops a vine: nothing to place.
+                status.PlugsAlreadySolid++;
+                plugIndex++;
+                plugTick = game.Tick;
+                return;
+            }
+
+            int item = plug.ItemId > 0 ? plug.ItemId : plan.PlugItemId;
+            game.SetMovement(0, 0, false);
+            if (game.PlaceBlock(plug.X, plug.Y, item))
+            {
+                status.PlugsDone++;
+            }
+            else
+            {
+                status.PlugsSkipped++;
+                string failed = string.Format(
+                    CultureInfo.InvariantCulture,
+                    "封堵 ({0},{1}) 放不下去（没带够方块或位置不允许），跳过；这一格藤蔓根可能还在。",
+                    plug.X,
+                    plug.Y);
+                game.Log(failed);
+            }
+
+            plugIndex++;
+            plugTick = game.Tick;
+        }
+
         private void WalkTowards(IGameBridge game, int targetX, int targetY)
         {
             int px = (int)Math.Round(game.PlayerX);

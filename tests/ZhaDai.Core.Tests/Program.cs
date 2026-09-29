@@ -24,6 +24,7 @@ internal static class Program
         ExecutorTests.Run(Check);
         PlanProtectionTests.Run(Check);
         PathfinderTests.Run(Check);
+        PlugTests.Run(Check);
 
         if (args.Length >= 2 && args[0] == "--walls")
         {

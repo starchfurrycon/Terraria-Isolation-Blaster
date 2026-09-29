@@ -46,6 +46,17 @@ namespace ZhaDai.Automation
     }
 
     /// <summary>One tile the pickaxe has to remove, as read from the plan's execution file.</summary>
+    /// <summary>A tile to fill with an inert block once the blasting is done.</summary>
+    public sealed class PlugOrder
+    {
+        public int X { get; set; }
+
+        public int Y { get; set; }
+
+        /// <summary>Item to place, as an inventory item id (wood is 9).</summary>
+        public int ItemId { get; set; }
+    }
+
     public sealed class DigOrder
     {
         public int X { get; set; }
@@ -93,6 +104,12 @@ namespace ZhaDai.Automation
         /// <summary>Tiles the plan wants dug instead of blasted; empty when dynamite covers everything.</summary>
         public List<DigOrder> Digs { get; } = new List<DigOrder>();
 
+        /// <summary>Tiles to fill with an inert block after the last blast, to stop vines at their source.</summary>
+        public List<PlugOrder> Plugs { get; } = new List<PlugOrder>();
+
+        /// <summary>Item id the plugs use; 0 when the plan has none.</summary>
+        public int PlugItemId { get; set; }
+
         /// <summary>
         /// Parses the line oriented file written by <c>PlanWriter.WriteExecutionFile</c>. Only the
         /// keys this runtime needs are read, so a newer planner may add lines without breaking it.
@@ -120,6 +137,12 @@ namespace ZhaDai.Automation
                     continue;
                 }
 
+                if (line.StartsWith("plug-item=", StringComparison.Ordinal))
+                {
+                    plan.PlugItemId = ParseInt(line.Substring("plug-item=".Length));
+                    continue;
+                }
+
                 if (line.Length == 0 || line[0] != '#')
                 {
                     continue;
@@ -137,6 +160,12 @@ namespace ZhaDai.Automation
                     continue;
                 }
 
+                if (line.StartsWith("#PLUG ", StringComparison.Ordinal))
+                {
+                    plan.Plugs.Add(ParsePlug(line));
+                    continue;
+                }
+
                 if (!line.StartsWith("#CHARGE ", StringComparison.Ordinal))
                 {
                     continue;
@@ -148,7 +177,33 @@ namespace ZhaDai.Automation
             return plan;
         }
 
-        private static DigOrder ParseDig(string line)
+        private static PlugOrder ParsePlug(string line)
+    {
+        // #PLUG x y item=9
+        string[] parts = line.Substring("#PLUG ".Length).Split(' ');
+        if (parts.Length < 2)
+        {
+            throw new InvalidDataException("施工文件里的 #PLUG 行格式不对：" + line);
+        }
+
+        PlugOrder plug = new PlugOrder
+        {
+            X = ParseInt(parts[0]),
+            Y = ParseInt(parts[1]),
+        };
+
+        foreach (string part in parts)
+        {
+            if (part.StartsWith("item=", StringComparison.Ordinal))
+            {
+                plug.ItemId = ParseInt(part.Substring("item=".Length));
+            }
+        }
+
+        return plug;
+    }
+
+    private static DigOrder ParseDig(string line)
         {
             DigOrder dig = new DigOrder();
             string[] parts = line.Substring("#DIG ".Length).Split(' ');

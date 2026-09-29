@@ -322,6 +322,98 @@ namespace ZhaDai.Runtime
             return TileType(x, y) == TombstoneTile;
         }
 
+        /// <summary>
+        /// Places one block of the given item into an empty tile. This is what plugs a vine anchor: the
+        /// planner has already counted that plug as a barrier, so a placement that does not happen is
+        /// reported as false and counted as a hole rather than assumed to be fine.
+        ///
+        /// The game's own path is <c>Player.PlaceThing</c>, but that reads the whole item use state
+        /// (animation, reach, selection) which a reflection-only plugin cannot drive reliably. Placing
+        /// through <c>WorldGen.PlaceTile</c> with <c>forced</c> set is what worldgen itself uses: the tile
+        /// goes down, and the inventory decrement is done here.
+        /// </summary>
+        public bool PlaceBlock(int x, int y, int itemId)
+        {
+            if (player == null || reflection.PlayerInventory == null || reflection.ItemType == null)
+            {
+                return false;
+            }
+
+            if (reflection.ItemCreateTile == null || reflection.WorldGenPlaceTile == null)
+            {
+                Log("运行时缺少 Item.createTile 或 WorldGen.PlaceTile，无法封堵。");
+                return false;
+            }
+
+            object[] inventory = PlayerField(reflection.PlayerInventory) as object[];
+            if (inventory == null)
+            {
+                return false;
+            }
+
+            if (!IsAir(x, y))
+            {
+                return false;
+            }
+
+            for (int i = 0; i < inventory.Length && i < 59; i++)
+            {
+                object item = inventory[i];
+                if (item == null)
+                {
+                    continue;
+                }
+
+                if (Convert.ToInt32(reflection.ItemType.GetValue(item)) != itemId)
+                {
+                    continue;
+                }
+
+                int stack = reflection.ItemStack == null ? 1 : Convert.ToInt32(reflection.ItemStack.GetValue(item));
+                if (stack <= 0)
+                {
+                    continue;
+                }
+
+                int tileType = Convert.ToInt32(reflection.ItemCreateTile.GetValue(item));
+                if (tileType <= 0)
+                {
+                    continue;
+                }
+
+                object[] arguments = reflection.WorldGenPlaceTile.GetParameters().Length == 4
+                    ? new object[] { x, y, tileType, true }
+                    : new object[] { x, y, tileType, true, true };
+
+                reflection.WorldGenPlaceTile.Invoke(null, arguments);
+                if (!IsSolid(x, y))
+                {
+                    // The tile refused to go down (occupied, or the type does not place here).
+                    return false;
+                }
+
+                if (reflection.ItemStack != null)
+                {
+                    reflection.ItemStack.SetValue(item, stack - 1);
+                }
+
+                return true;
+            }
+
+            return false;
+        }
+
+        private bool IsAir(int x, int y)
+        {
+            object tile = TileAt(x, y);
+            if (tile == null || reflection.TileActive == null)
+            {
+                return false;
+            }
+
+            return !Convert.ToBoolean(reflection.TileActive.Invoke(tile, null));
+        }
+
         public int FindDynamiteSlot()
         {
             object[] inventory = PlayerField(reflection.PlayerInventory) as object[];

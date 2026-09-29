@@ -103,6 +103,8 @@ namespace ZhaDai.Runtime
             Field("Terraria.Item", "type", true, "物品 ID"),
             Field("Terraria.Item", "stack", true, "堆叠数量"),
             Field("Terraria.Item", "pick", true, "镐力（镐子）、0（非镐子）"),
+        Field("Terraria.Item", "createTile", true, "物块物品对应的物块 id（封堵用）"),
+        Method("Terraria.WorldGen", "PlaceTile", true, "放物块（封堵用）"),
 
             // ---------------------------------------------------------------- NPC
             Field("Terraria.NPC", "active", true, "NPC 是否激活"),

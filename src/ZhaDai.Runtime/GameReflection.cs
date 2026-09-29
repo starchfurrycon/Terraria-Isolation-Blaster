@@ -33,6 +33,9 @@ namespace ZhaDai.Runtime
 
         public Type Item { get; private set; }
 
+        /// <summary>Terraria.WorldGen: the static world helpers the plug placement goes through.</summary>
+        public Type WorldGen { get; private set; }
+
         public Type SelectedItemState { get; private set; }
 
         public FieldInfo MainPlayers { get; private set; }
@@ -114,6 +117,12 @@ namespace ZhaDai.Runtime
         /// <summary>Item.pick: the pickaxe power of an item, 0 for everything that is not a pickaxe.</summary>
         public FieldInfo ItemPick { get; private set; }
 
+        /// <summary>Item.createTile: the tile an item places, 0 for everything that is not a block.</summary>
+        public FieldInfo ItemCreateTile { get; private set; }
+
+        /// <summary>WorldGen.PlaceTile: the placement call worldgen itself uses.</summary>
+        public MethodInfo WorldGenPlaceTile { get; private set; }
+
         public FieldInfo NpcActive { get; private set; }
 
         public FieldInfo NpcFriendly { get; private set; }
@@ -176,6 +185,7 @@ namespace ZhaDai.Runtime
             reflection.Npc = reflection.RequireType(game, "Terraria.NPC");
             reflection.Tile = reflection.RequireType(game, "Terraria.Tile");
             reflection.Item = reflection.RequireType(game, "Terraria.Item");
+        reflection.WorldGen = reflection.RequireType(game, "Terraria.WorldGen");
             reflection.SelectedItemState = reflection.OptionalType(game, "Terraria.Player+SelectedItemState",
                 "拿不到选中的物品栏格，就无法切换手上的物品。");
 
@@ -221,6 +231,8 @@ namespace ZhaDai.Runtime
             reflection.ItemType = reflection.RequireField(reflection.Item, "type");
             reflection.ItemStack = reflection.OptionalField(reflection.Item, "stack", "拿不到堆叠数量就无法判断雷管还剩几发。");
             reflection.ItemPick = reflection.OptionalField(reflection.Item, "pick", "拿不到镐力就无法在开工前盘点镐子够不够。");
+        reflection.ItemCreateTile = reflection.OptionalField(reflection.Item, "createTile", "拿不到 createTile 就无法把封堵块放下去。");
+        reflection.WorldGenPlaceTile = reflection.OptionalMethod(reflection.WorldGen, "PlaceTile", new[] { typeof(int), typeof(int), typeof(int), typeof(bool) }, "拿不到 PlaceTile 就无法把封堵块放下去。") ?? reflection.OptionalMethod(reflection.WorldGen, "PlaceTile", new[] { typeof(int), typeof(int), typeof(int), typeof(bool), typeof(bool) }, "拿不到 PlaceTile 就无法把封堵块放下去。");
 
             reflection.NpcActive = reflection.OptionalField(reflection.Npc, "active", "拿不到 NPC 激活状态就不做敌怪规避。");
             reflection.NpcFriendly = reflection.OptionalField(reflection.Npc, "friendly", "拿不到友方标记就把 NPC 一律当威胁。");

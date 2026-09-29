@@ -111,3 +111,24 @@
   1 格缓冲不比不留缓冲更省、改挖清单无负数镐击。
 
 下一步：待做 3 封堵清单 → 待做 4 真机脚手板 → 收尾。
+
+## 已完成（第 3 轮）：封堵清单（防藤蔓绕过封带）
+
+- 模型：`InfectionModel.CanPlantBridge` 与 `SpreadWorkspace` 都认识封堵块——被封堵的藤蔓根不再算
+  向下通路，所以「用一块木头换掉 13 格竖井」之后复核仍然全部封住（真跑传播图，不是嘴上说）。
+- 规划器：｀PlugOrderｘ 清单（藤蔓根正下方那格 + 物品 id），`PlugVines` 默认开、`PlugItemId` 默认 9（木材），
+  审议的锚点判定改成用距离图（原来用 fence mask，而下方那行的 mask 在那时还没写）。
+- 输出：施工文件 `#PLUG x y item=9` 与头部 `plugs=`/`plug-item=`；JSON `plugTiles`/
+  `requiredPlugBlocks`/`plugItemId`/`vineCurtainTilesSaved`；文本报告一行「封堵：N 格（物品 9，需备 M 个…）」。
+- 执行器：新状态 `PlugFence`，放在**最后一发雷管响完之后**（放爆破范围里会被下一发炸掉）；那格已是石头就
+  跳过；放不下去记 `PlugsSkipped` 并明说这一格藤蔓根可能还在；接管前盘点把封堵方块算进去，不够拒绝接管。
+- 运行时：`PlaceBlock` 用 `WorldGen.PlaceTile(forced)` + 扣库存；`Item.createTile` 与
+  `WorldGen.PlaceTile` 两条反射成员对真实 exe 核对通过（共 60 项、必需缺失 0），已标成必需项。
+- 实测 草剑挥打：雷管 10,535 → **9,452 发**，封带 30,499 → 25,531 格，改挖 78 → 4 格，
+  顶掉 38,727 格竖井，复核仍全部封住；封堵需求 2,979 格 / 需备 2,989 个木材。
+- 测试：新建 `PlugTests.cs` 13 项（规划器给清单、清单与汇总一致、封堵后复核仍封住、比竖井省、
+  备料足够、默认木材、封堵格都在会长植物的物块下方、施工文件往返、执行器真的放下两块、没方块时拒绝接管）；
+  检查项 122 → 141，verify-all.ps1 8/8。
+
+下一步：待做 4 真机脚手板（`tools/live-check.ps1`：复制存档到独立目录、`-savedirectory` 启动、
+只读 runtime.log/status.txt），然后收尾发 v0.1.2-alpha。

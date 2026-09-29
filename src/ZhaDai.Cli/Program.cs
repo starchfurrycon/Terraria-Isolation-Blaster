@@ -90,6 +90,8 @@ internal static class Program
             ExtraSeedRects = options.ExtraSeedRects,
             Protection = options.Protection,
             ProtectionBuffer = options.ProtectionBuffer,
+            PlugVines = options.PlugVines,
+            PlugItemId = options.PlugItemId,
             PickPower = options.PickPower,
         };
 
@@ -160,6 +162,8 @@ internal static class Program
             ExtraSeedRects = options.ExtraSeedRects,
             Protection = options.Protection,
             ProtectionBuffer = options.ProtectionBuffer,
+            PlugVines = options.PlugVines,
+            PlugItemId = options.PlugItemId,
             PickPower = options.PickPower,
         };
 
@@ -284,6 +288,8 @@ internal static class Program
               --vine-reach=<格数>  藤蔓能顺着空气向下带多远，默认 13；设 0 只按普通三格扩散封带
               --protect=<级别>     strict（默认，结构物、玩家建材与玩家墙都不炸，改挖）、structures、none
               --protect-buffer=<格> 保护范围外再留几格余量，默认 1（0..3）
+              --no-plug            不用封堵块顶掉藤蔓竖井（默认用 1 块木头换掉 13 格竖井）
+              --plug-item=<物品id> 封堵用的物品，默认 9（木材）
               --pick=<镐力>        规划时假设的镐力（默认 100，熔岩镐）；影响哪些格子只能靠镐子
                                     （最快最省，但对会长藤蔓的带草前沿不保险）
               --also-rect=x0,y0,x1,y1
@@ -335,6 +341,12 @@ internal static class Program
 
         /// <summary>Extra margin around protected tiles; see <see cref="BlastPlanOptions.ProtectionBuffer"/>.</summary>
         public int ProtectionBuffer { get; private set; } = 1;
+
+        /// <summary>Replace vine curtains with one inert block per anchor; see BlastPlanOptions.PlugVines.</summary>
+        public bool PlugVines { get; private set; } = true;
+
+        /// <summary>Item id used for the plugs, default wood (9).</summary>
+        public int PlugItemId { get; private set; } = 9;
 
         /// <summary>Pick power the plan assumes when a tile has to be dug instead of blasted.</summary>
         public int PickPower { get; private set; } = TileCatalog.PreHardmodePickPower;
@@ -396,6 +408,12 @@ internal static class Program
                         break;
                     case "protect-buffer":
                         options.ProtectionBuffer = ParseInt(name, value);
+                        break;
+                    case "no-plug":
+                        options.PlugVines = false;
+                        break;
+                    case "plug-item":
+                        options.PlugItemId = ParseInt(name, value);
                         break;
                     case "pick":
                         options.PickPower = ParseInt(name, value);

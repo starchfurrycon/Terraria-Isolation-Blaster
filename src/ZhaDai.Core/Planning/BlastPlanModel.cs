@@ -62,6 +62,16 @@ public sealed record BlastPlanOptions
     public ProtectionLevel Protection { get; init; } = ProtectionLevel.Strict;
 
     /// <summary>
+    /// Replace the vine curtains with a single inert block under each plant that can grow one. One block
+    /// beats blasting a column as deep as a vine can reach, but it only works if the player has the blocks
+    /// and is willing to walk them in, so it can be turned off.
+    /// </summary>
+    public bool PlugVines { get; init; } = true;
+
+    /// <summary>Item id used as the plug. Wood is the cheapest thing everybody has by the hundred.</summary>
+    public int PlugItemId { get; init; } = 9;
+
+    /// <summary>
     /// Extra tiles of margin around anything protected. One tile keeps a blast from clipping the block
     /// next to a chest, which is enough to stop the contents being thrown around; zero restores the old
     /// tight fit. Raising it past three buys little and costs a lot of charges, so it is capped there.
@@ -181,6 +191,12 @@ public sealed record BlastCharge(
     int PlayerBlocksInBlast = 0,
     int BuiltWallTilesInBlast = 0);
 
+/// <summary>
+/// A tile the plan wants filled with an inert block. Placed after the blasts, because a plug inside a
+/// blast radius would simply be blown up again, and it only ever goes where the tile is air by then.
+/// </summary>
+public sealed record PlugOrder(int X, int Y, int ItemId);
+
 /// <summary>One fence: the cleared band around a single infection front.</summary>
 public sealed record FenceSection(
     int Sequence,
@@ -195,7 +211,8 @@ public sealed record FenceSection(
     bool WithinAnalyzerLimits,
     bool SealedByFloodVerification,
     int DigTiles = 0,
-    int BlockedTiles = 0);
+    int BlockedTiles = 0,
+    int PlugTiles = 0);
 
 /// <summary>Totals for the whole plan.</summary>
 public sealed record BlastPlanSummary(
@@ -229,6 +246,10 @@ public sealed record BlastPlanSummary(
     int BuiltWallTilesInBlast = 0,
     int BuiltWallTilesProtected = 0,
     int BuiltWallTilesWorld = 0,
+    int PlugTiles = 0,
+    int RequiredPlugBlocks = 0,
+    int PlugItemId = 0,
+    int VineCurtainTilesSaved = 0,
     long EstimatedDigSeconds = 0);
 
 /// <summary>
@@ -246,8 +267,12 @@ public sealed record BlastPlan(
     IReadOnlyList<BlastCharge> Charges,
     IReadOnlyList<string> Notes,
     PlanOverview? Overview = null,
-    IReadOnlyList<DigOrder>? Digs = null)
+    IReadOnlyList<DigOrder>? Digs = null,
+    IReadOnlyList<PlugOrder>? Plugs = null)
 {
     /// <summary>Tiles the pickaxe has to remove; empty when dynamite covers the whole fence.</summary>
     public IReadOnlyList<DigOrder> DigOrders => Digs ?? [];
+
+    /// <summary>Tiles to fill with an inert block after the blasts; empty when curtains were dug instead.</summary>
+    public IReadOnlyList<PlugOrder> PlugOrders => Plugs ?? [];
 }

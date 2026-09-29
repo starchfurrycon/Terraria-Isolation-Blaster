@@ -78,6 +78,14 @@ namespace ZhaDai.Automation
         /// <summary>Mines one tile, used for tombstones and for digging through on the way.</summary>
         void DigTile(int x, int y);
 
+        /// <summary>
+        /// Places one block of the given item into an empty tile, used for plugging vine anchors. Returns
+        /// false when the placement did not happen -- no such item in the inventory, a tile already there,
+        /// or nothing adjacent to build against -- so the caller can count it as a hole rather than assume
+        /// the vine is stopped.
+        /// </summary>
+        bool PlaceBlock(int x, int y, int itemId);
+
         /// <summary>Sets the movement controls for this tick. dx and dy are -1, 0 or 1.</summary>
         void SetMovement(int dx, int dy, bool jump);
 

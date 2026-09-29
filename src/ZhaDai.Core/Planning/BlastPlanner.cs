@@ -111,6 +111,10 @@ public static class BlastPlanner
         int vineAnchors = 0;
         FenceTally totals = new() { BuiltWallsWorld = tiles.BuiltWallCount };
 
+        List<PlugOrder> plugOrders = [];
+        HashSet<int> plugs = [];
+        int curtainTilesSaved = 0;
+
         foreach (SeedCluster cluster in clusters)
         {
             TileRect ringRegion = cluster.Bounds.Expand(opts.Clearance + 1).Clamp(width, height);
@@ -146,12 +150,26 @@ public static class BlastPlanner
                         }
 
                         // Tiles that can actually anchor a vine: the tile below is already empty, or
-                        // the band is about to empty it. These are the only ones worth flagging for
-                        // the player, and destroying them removes the vine vector outright.
+                        // the band is about to empty it. Asking the distance map rather than the fence
+                        // mask matters because the mask for the row below is not written yet at this
+                        // point in the scan.
                         int below = index + width;
-                        if (below < tileCount && (tiles.ActiveAt(below) is false || fence[below] != 0))
+                        bool belowAir = below < tileCount && !tiles.ActiveAt(below);
+                        bool belowWillClear = below < tileCount &&
+                            model.NodeMask[below] != 0 &&
+                            workspace.DistanceAt(below) <= opts.Clearance;
+                        if (below < tileCount && (belowAir || belowWillClear))
                         {
                             vineAnchors++;
+                            if (opts.PlugVines)
+                            {
+                                // One block under the plant and the vine never starts: that replaces the
+                                // whole curtain below, which is the deepest part of the plan.
+                                plugs.Add(below);
+                                plugOrders.Add(new PlugOrder(x, y + 1, opts.PlugItemId));
+                                curtainTilesSaved += Math.Max(0, opts.VineReach);
+                                continue;
+                            }
                         }
 
                         for (int dy = 1; dy <= opts.VineReach; dy++)
@@ -247,7 +265,10 @@ public static class BlastPlanner
 
             workspace.ResetDistance(ringRegion);
 
-            // Verify against the real graph instead of trusting the construction argument.
+            // Verify against the real graph instead of trusting the construction argument. The plugs
+            // collected above have to be part of the graph, otherwise a plan whose curtains were replaced
+            // by blocks would be reported as leaking.
+            workspace.Plugged = plugs;
             FloodResult flood = workspace.Flood(cluster.Seeds, fence, workRegion);
             bool isSealed = !flood.Escaped;
             allSealed &= isSealed;
@@ -343,6 +364,10 @@ public static class BlastPlanner
             BlastImmuneTilesInBlast: blastImmuneInBlast,
             AllSectionsSealed: allSealed,
             VineAnchorTiles: vineAnchors,
+            PlugTiles: plugOrders.Count,
+            RequiredPlugBlocks: plugOrders.Count == 0 ? 0 : plugOrders.Count + 10,
+            PlugItemId: opts.PlugItemId,
+            VineCurtainTilesSaved: curtainTilesSaved,
             EstimatedPlayerSeconds: EstimateSeconds(charges.Count, opts),
             DigTiles: totals.DigTiles,
             BlockedTiles: totals.BlockedTiles,
@@ -382,7 +407,7 @@ public static class BlastPlanner
         AddRemovalNotes(notes, totals, opts);
 
         PlanOverview overview = BuildOverview(model, fence, opts.Clearance);
-        return new BlastPlan(world.Metadata, opts, summary, sections, charges, notes, overview, totals.Digs);
+        return new BlastPlan(world.Metadata, opts, summary, sections, charges, notes, overview, totals.Digs, plugOrders);
     }
 
     /// <summary>Downsamples the world so the map does not need the whole tile grid.</summary>

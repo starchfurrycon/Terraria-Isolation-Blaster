@@ -83,6 +83,10 @@ public static class PlanWriter
         writer.WriteNumber("playerBlocksInBlast", summary.PlayerBlocksInBlast);
         writer.WriteNumber("builtWallTilesInBlast", summary.BuiltWallTilesInBlast);
         writer.WriteNumber("builtWallTilesInWorld", summary.BuiltWallTilesWorld);
+        writer.WriteNumber("plugTiles", summary.PlugTiles);
+        writer.WriteNumber("requiredPlugBlocks", summary.RequiredPlugBlocks);
+        writer.WriteNumber("plugItemId", summary.PlugItemId);
+        writer.WriteNumber("vineCurtainTilesSaved", summary.VineCurtainTilesSaved);
         writer.WriteNumber("estimatedDigSeconds", summary.EstimatedDigSeconds);
         writer.WriteNumber("dynamiteStacks", summary.DynamiteStacks);
         writer.WriteNumber("seedsDestroyedByBlast", summary.SeedsDestroyedByBlast);
@@ -187,6 +191,8 @@ public static class PlanWriter
         text.Append("charges=").Append(plan.Charges.Count).Append('\n');
         text.Append("digs=").Append(plan.DigOrders.Count(dig => dig.Hits > 0)).Append('\n');
         text.Append("blocked=").Append(plan.DigOrders.Count(dig => dig.Hits <= 0)).Append('\n');
+        text.Append("plugs=").Append(plan.PlugOrders.Count).Append('\n');
+        text.Append("plug-item=").Append(plan.PlugOrders.Count == 0 ? 0 : plan.PlugOrders[0].ItemId).Append('\n');
 
         foreach (FenceSection section in plan.Sections)
         {
@@ -237,6 +243,16 @@ public static class PlanWriter
                 .Append('\n');
         }
 
+        // Plugs come last on purpose: a block placed inside a blast radius would be blown up again, so the
+        // executor fills these after every charge has gone off. By then the tile has to be air, and if it
+        // is still rock the plug is skipped -- rock already stops a vine.
+        foreach (PlugOrder plug in plan.PlugOrders)
+        {
+            text.Append("#PLUG ").Append(plug.X).Append(' ').Append(plug.Y)
+                .Append(" item=").Append(plug.ItemId)
+                .Append('\n');
+        }
+
         text.Append("#END\n");
         File.WriteAllText(path, text.ToString(), new UTF8Encoding(encoderShouldEmitUTF8Identifier: false));
     }
@@ -253,6 +269,17 @@ public static class PlanWriter
         text.AppendLine(string.Format(culture, "难度：{0}", plan.World.HardMode ? "困难模式" : "肉前"));
         text.AppendLine(string.Format(culture, "感染源：邪恶 {0} 格，神圣 {1} 格；可感染物块 {2} 格", s.EvilSeeds, s.HallowSeeds, s.InfectionNodes));
         text.AppendLine(string.Format(culture, "隔离段：{0} 段（其中混合段 {1}）", s.Sections, s.MixedSections));
+        if (s.PlugTiles > 0)
+        {
+            text.AppendLine(string.Format(
+                culture,
+                "封堵：{0} 格（物品 {1}，需备 {2} 个；顶掉了 {3} 格藤蔓竖井）",
+                s.PlugTiles,
+                s.PlugItemId,
+                s.RequiredPlugBlocks,
+                s.VineCurtainTilesSaved));
+        }
+
         text.AppendLine(string.Format(culture, "封带物块：{0} 格；雷管：{1} 发（约 {2} 组）", s.FenceTiles, s.Charges, s.DynamiteStacks));
         text.AppendLine(string.Format(
             culture,

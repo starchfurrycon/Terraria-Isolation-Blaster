@@ -150,7 +150,40 @@ internal sealed class FakeBridge : IGameBridge
     public int FindDynamiteSlot() => DynamiteCount > 0 ? 3 : -1;
 
     /// <summary>Fake inventory: only Dynamite is counted, everything else is absent.</summary>
-    public int CountItems(int itemId) => itemId == GameIds.Dynamite ? DynamiteCount : 0;
+    public int CountItems(int itemId)
+    {
+        if (itemId == GameIds.Dynamite)
+        {
+            return DynamiteCount;
+        }
+
+        return blocks.TryGetValue(itemId, out int count) ? count : 0;
+    }
+
+    /// <summary>Blocks available for plugging, by item id. Wood is 9.</summary>
+    public readonly Dictionary<int, int> blocks = [];
+
+    public int PlacedBlocks { get; private set; }
+
+    public bool PlaceBlock(int x, int y, int itemId)
+    {
+        if (x < 0 || y < 0 || x >= TileWidth || y >= TileHeight)
+        {
+            return false;
+        }
+
+        int index = (y * TileWidth) + x;
+        if (solid[index] || !blocks.TryGetValue(itemId, out int count) || count <= 0)
+        {
+            return false;
+        }
+
+        blocks[itemId] = count - 1;
+        solid[index] = true;
+        types[index] = (ushort)itemId;
+        PlacedBlocks++;
+        return true;
+    }
 
     /// <summary>Fake pickaxe power; the tests set it to whatever the run should be audited against.</summary>
     public int BestPickPower { get; set; } = 100;

@@ -49,6 +49,13 @@ public sealed class SpreadWorkspace
     /// </summary>
     public int VineReach { get; set; } = InfectionModel.VineDownwardReach;
 
+    /// <summary>
+    /// Tiles the plan intends to fill with an inert block. A plug under a plant stops the vine at its
+    /// source, so the flood must not treat that column as a route; without this the verification would
+    /// reject a plan whose curtains were replaced by plugs.
+    /// </summary>
+    public IReadOnlySet<int>? Plugged { get; set; }
+
     public SpreadWorkspace(InfectionModel model)
     {
         ArgumentNullException.ThrowIfNull(model);
@@ -396,10 +403,15 @@ public sealed class SpreadWorkspace
             }
         }
 
-        // A downward vine is anchored to its grass tile, so it keeps the same column.
-        for (int dy = InfectionModel.SpreadReach + 1; dy <= VineReach; dy++)
+        // A downward vine is anchored to its grass tile, so it keeps the same column -- unless the tile
+        // directly below the plant is plugged, in which case the vine never starts.
+        bool vinePlugged = Plugged != null && Plugged.Contains(index + width);
+        if (!vinePlugged)
         {
-            TryEnqueueAt(queue, x, y + dy, blocked, area);
+            for (int dy = InfectionModel.SpreadReach + 1; dy <= VineReach; dy++)
+            {
+                TryEnqueueAt(queue, x, y + dy, blocked, area);
+            }
         }
     }
 
